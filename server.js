@@ -411,7 +411,7 @@ function receiveMovement(p, input) {
     );
 
     const allowedDistance =
-        0.4 + maximumSpeed * elapsed * 1.2;
+    0.8 + maximumSpeed * elapsed * 1.5;
 
     const distance = Math.hypot(x - p.x, z - p.z);
 
