@@ -786,8 +786,8 @@ function boot() {
             me.reloading
                 ? 'RELOADING…'
                 : me.reserve === 0
-                    ? 'NO RESERVE AMMO'
-                    : 'R  RELOAD';
+                    ? 'ELIPSAN SOU OULLA MANA MOU'
+                    : 'TSILA JINTO R';
 
         $('#power').hidden = !(me.power || me.egg);
 
