@@ -367,19 +367,44 @@ function leave(socket) {
     broadcast(room);
 }
 
-// Check intermediate points to stop movement through walls.
+// --------------------------------------------------
+// SPRINT MOVEMENT FIX
+//
+// The browser applies movement one axis at a time:
+// X first, then Z.
+//
+// Previously, the server checked one straight diagonal
+// path. That could incorrectly reject valid movement
+// around a wall corner, especially when sprinting.
+//
+// Validate an X-then-Z route instead.
+// --------------------------------------------------
+
 function movementPathClear(x1, z1, x2, z2) {
-    const distance = Math.hypot(x2 - x1, z2 - z1);
-    const steps = Math.max(1, Math.ceil(distance / 0.2));
+    const radius = 0.25;
 
-    for (let i = 1; i <= steps; i++) {
-        const t = i / steps;
+    // Validate movement along X while Z stays constant.
+    const xDistance = Math.abs(x2 - x1);
+    const xSteps = Math.max(1, Math.ceil(xDistance / 0.2));
 
-        if (!passable(
-            x1 + (x2 - x1) * t,
-            z1 + (z2 - z1) * t,
-            0.25
-        )) {
+    for (let i = 1; i <= xSteps; i++) {
+        const t = i / xSteps;
+        const x = x1 + (x2 - x1) * t;
+
+        if (!passable(x, z1, radius)) {
+            return false;
+        }
+    }
+
+    // Validate movement along Z at the new X position.
+    const zDistance = Math.abs(z2 - z1);
+    const zSteps = Math.max(1, Math.ceil(zDistance / 0.2));
+
+    for (let i = 1; i <= zSteps; i++) {
+        const t = i / zSteps;
+        const z = z1 + (z2 - z1) * t;
+
+        if (!passable(x2, z, radius)) {
             return false;
         }
     }
@@ -411,7 +436,7 @@ function receiveMovement(p, input) {
     );
 
     const allowedDistance =
-    0.8 + maximumSpeed * elapsed * 1.5;
+        0.8 + maximumSpeed * elapsed * 1.5;
 
     const distance = Math.hypot(x - p.x, z - p.z);
 
