@@ -1,0 +1,8 @@
+{
+  "name": "chomp-sector-zero-multiplayer",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {"start": "node server.js", "test": "node --test tests/*.test.js"},
+  "engines": {"node": ">=20"},
+  "dependencies": {"express": "^4.21.2", "socket.io": "^4.8.1"}
+}
