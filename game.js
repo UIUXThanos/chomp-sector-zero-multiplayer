@@ -1238,7 +1238,7 @@ function boot() {
         ) {
             if (me.reserve <= 0) {
                 notify(
-                    'NO RESERVE AMMO · COLLECT YELLOW PELLETS',
+                    'ELIPSAN OULLES MANA MOU · SOROPSE JITRINOUKIA',
                     2.2
                 );
             } else {
