@@ -231,8 +231,9 @@ function boot() {
             );
 
             // Initialize from the server before playing.
-            // During gameplay, only correct large errors.
-            if (!started || positionError > 2) {
+            // While playing, do not snap the camera to delayed
+            // server positions when sprinting with Shift.
+            if (!started) {
                 me.x = p.x;
                 me.z = p.z;
             }
