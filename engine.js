@@ -1,39 +1,36 @@
+
 'use strict';
 
 const V3 = {
     sub: (a, b) => a.map((v, i) => v - b[i]),
-
-    dot: (a, b) =>
-        a.reduce((s, v, i) => s + v * b[i], 0),
-
+    dot: (a, b) => a.reduce((s, v, i) => s + v * b[i], 0),
     cross: (a, b) => [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0]
     ],
-
     norm: a => {
-        let l = Math.hypot(...a) || 1;
-        return a.map(v => v / l);
+        const length = Math.hypot(...a) || 1;
+        return a.map(v => v / length);
     }
 };
 
 const M4 = {
-    perspective: (f, a, n, z) => {
-        let s = 1 / Math.tan(f / 2);
+    perspective: (fov, aspect, near, far) => {
+        const s = 1 / Math.tan(fov / 2);
 
         return new Float32Array([
-            s / a, 0, 0, 0,
+            s / aspect, 0, 0, 0,
             0, s, 0, 0,
-            0, 0, (z + n) / (n - z), -1,
-            0, 0, (2 * z * n) / (n - z), 0
+            0, 0, (far + near) / (near - far), -1,
+            0, 0, 2 * far * near / (near - far), 0
         ]);
     },
 
     look: (eye, target, up = [0, 1, 0]) => {
-        let z = V3.norm(V3.sub(eye, target));
-        let x = V3.norm(V3.cross(up, z));
-        let y = V3.cross(z, x);
+        const z = V3.norm(V3.sub(eye, target));
+        const x = V3.norm(V3.cross(up, z));
+        const y = V3.cross(z, x);
 
         return new Float32Array([
             x[0], y[0], z[0], 0,
@@ -46,15 +43,15 @@ const M4 = {
         ]);
     },
 
-    model: (p, s = [1, 1, 1], r = 0) => {
-        let c = Math.cos(r);
-        let n = Math.sin(r);
+    model: (pos, scale = [1, 1, 1], yaw = 0) => {
+        const c = Math.cos(yaw);
+        const s = Math.sin(yaw);
 
         return new Float32Array([
-            c * s[0], 0, -n * s[0], 0,
-            0, s[1], 0, 0,
-            n * s[2], 0, c * s[2], 0,
-            ...p, 1
+            c * scale[0], 0, -s * scale[0], 0,
+            0, scale[1], 0, 0,
+            s * scale[2], 0, c * scale[2], 0,
+            ...pos, 1
         ]);
     }
 };
@@ -65,11 +62,8 @@ class Geometry {
     }
 
     tri(a, b, c, color, normal) {
-        let n = normal || V3.norm(
-            V3.cross(
-                V3.sub(b, a),
-                V3.sub(c, a)
-            )
+        const n = normal || V3.norm(
+            V3.cross(V3.sub(b, a), V3.sub(c, a))
         );
 
         [a, b, c].forEach(p => {
@@ -77,144 +71,80 @@ class Geometry {
         });
     }
 
-    quad(a, b, c, d, col) {
-        this.tri(a, b, c, col);
-        this.tri(a, c, d, col);
+    quad(a, b, c, d, color) {
+        this.tri(a, b, c, color);
+        this.tri(a, c, d, color);
     }
 
-    box(x, y, z, w, h, d, c) {
-        let X = x + w / 2;
-        let A = x - w / 2;
-        let Y = y + h / 2;
-        let B = y - h / 2;
-        let Z = z + d / 2;
-        let C = z - d / 2;
+    box(x, y, z, w, h, d, color) {
+        const X = x + w / 2;
+        const A = x - w / 2;
+        const Y = y + h / 2;
+        const B = y - h / 2;
+        const Z = z + d / 2;
+        const C = z - d / 2;
 
-        this.quad(
-            [A, B, Z],
-            [X, B, Z],
-            [X, Y, Z],
-            [A, Y, Z],
-            c
-        );
-
-        this.quad(
-            [X, B, C],
-            [A, B, C],
-            [A, Y, C],
-            [X, Y, C],
-            c
-        );
-
-        this.quad(
-            [A, Y, Z],
-            [X, Y, Z],
-            [X, Y, C],
-            [A, Y, C],
-            c
-        );
-
-        this.quad(
-            [A, B, C],
-            [X, B, C],
-            [X, B, Z],
-            [A, B, Z],
-            c
-        );
-
-        this.quad(
-            [X, B, Z],
-            [X, B, C],
-            [X, Y, C],
-            [X, Y, Z],
-            c
-        );
-
-        this.quad(
-            [A, B, C],
-            [A, B, Z],
-            [A, Y, Z],
-            [A, Y, C],
-            c
-        );
+        this.quad([A, B, Z], [X, B, Z], [X, Y, Z], [A, Y, Z], color);
+        this.quad([X, B, C], [A, B, C], [A, Y, C], [X, Y, C], color);
+        this.quad([A, Y, Z], [X, Y, Z], [X, Y, C], [A, Y, C], color);
+        this.quad([A, B, C], [X, B, C], [X, B, Z], [A, B, Z], color);
+        this.quad([X, B, Z], [X, B, C], [X, Y, C], [X, Y, Z], color);
+        this.quad([A, B, C], [A, B, Z], [A, Y, Z], [A, Y, C], color);
 
         return this;
     }
 
-    sphere(x, y, z, r, c, segments = 14, rings = 8) {
+    sphere(x, y, z, r, color, segments = 14, rings = 8) {
         for (let i = 0; i < rings; i++) {
             for (let j = 0; j < segments; j++) {
-                let pt = (a, b) => [
+                const pt = (a, b) => [
                     x + r * Math.sin(a) * Math.cos(b),
                     y + r * Math.cos(a),
                     z + r * Math.sin(a) * Math.sin(b)
                 ];
 
-                let a = i * Math.PI / rings;
-                let b = (i + 1) * Math.PI / rings;
-                let u = j * 2 * Math.PI / segments;
-                let v = (j + 1) * 2 * Math.PI / segments;
+                const a = i * Math.PI / rings;
+                const b = (i + 1) * Math.PI / rings;
+                const u = j * 2 * Math.PI / segments;
+                const v = (j + 1) * 2 * Math.PI / segments;
 
-                this.quad(
-                    pt(a, v),
-                    pt(b, v),
-                    pt(b, u),
-                    pt(a, u),
-                    c
-                );
+                this.quad(pt(a, v), pt(b, v), pt(b, u), pt(a, u), color);
             }
         }
 
         return this;
     }
 
-    chomp(c) {
-        let seg = 26;
-        let rings = 15;
+    chomp(color) {
+        const segments = 26;
+        const rings = 15;
 
         for (let i = 0; i < rings; i++) {
-            for (let j = 0; j < seg; j++) {
+            for (let j = 0; j < segments; j++) {
                 const pt = (a, b) => {
-                    let px = Math.cos(a);
-                    let rad = Math.sin(a);
+                    const px = Math.cos(a);
+                    const radius = Math.sin(a);
 
                     return [
                         px,
-                        rad * Math.sin(b),
-                        rad * Math.cos(b)
+                        radius * Math.sin(b),
+                        radius * Math.cos(b)
                     ];
                 };
 
-                let a = i * Math.PI / rings;
-                let b = (i + 1) * Math.PI / rings;
+                const a = i * Math.PI / rings;
+                const b = (i + 1) * Math.PI / rings;
+                const u = (0.22 + j / segments * 1.56) * Math.PI;
+                const v = (0.22 + (j + 1) / segments * 1.56) * Math.PI;
 
-                let u = (0.22 + j / seg * 1.56) * Math.PI;
-                let v = (0.22 + (j + 1) / seg * 1.56) * Math.PI;
-
-                this.quad(
-                    pt(a, v),
-                    pt(b, v),
-                    pt(b, u),
-                    pt(a, u),
-                    c
-                );
+                this.quad(pt(a, v), pt(b, v), pt(b, u), pt(a, u), color);
 
                 if (j === 0) {
-                    this.tri(
-                        [Math.cos(a), 0, 0],
-                        pt(a, u),
-                        pt(b, u),
-                        c
-                    );
+                    this.tri([Math.cos(a), 0, 0], pt(a, u), pt(b, u), color);
                 }
 
-                if (j === seg - 1) {
-                    this.tri(
-                        [Math.cos(a), 0, 0],
-                        pt(b, v),
-                        pt(a, v),
-                        c
-                    );
+                if (j === segments - 1) {
+                    this.tri([Math.cos(a), 0, 0], pt(b, v), pt(a, v), color);
                 }
             }
         }
@@ -222,34 +152,33 @@ class Geometry {
         return this;
     }
 
-    ghost(c) {
-        let segments = 18;
-        let rings = 7;
+    ghost(color) {
+        const segments = 18;
+        const rings = 7;
 
         for (let i = 0; i < rings; i++) {
             for (let j = 0; j < segments; j++) {
                 const pt = (row, col) => {
-                    let th = col / segments * Math.PI * 2;
-                    let rad;
-                    let yy;
+                    const angle = col / segments * Math.PI * 2;
+                    let radius;
+                    let y;
 
                     if (row === 0) {
-                        rad = 0.58;
-                        yy = -0.58 + (col % 2) * 0.18;
+                        radius = 0.58;
+                        y = -0.58 + (col % 2) * 0.18;
                     } else if (row === 1) {
-                        rad = 0.62;
-                        yy = -0.25;
+                        radius = 0.62;
+                        y = -0.25;
                     } else {
-                        let a = (row - 1) / (rings - 1) * Math.PI / 2;
-
-                        rad = 0.62 * Math.cos(a);
-                        yy = -0.15 + 0.72 * Math.sin(a);
+                        const a = (row - 1) / (rings - 1) * Math.PI / 2;
+                        radius = 0.62 * Math.cos(a);
+                        y = -0.15 + 0.72 * Math.sin(a);
                     }
 
                     return [
-                        rad * Math.sin(th),
-                        yy,
-                        rad * Math.cos(th)
+                        radius * Math.sin(angle),
+                        y,
+                        radius * Math.cos(angle)
                     ];
                 };
 
@@ -258,7 +187,7 @@ class Geometry {
                     pt(i + 1, j + 1),
                     pt(i + 1, j),
                     pt(i, j),
-                    c
+                    color
                 );
             }
         }
@@ -281,7 +210,7 @@ class Renderer {
             throw Error('WebGL unavailable');
         }
 
-        const vs = `
+        const vertexShader = `
             attribute vec3 aP;
             attribute vec3 aN;
             attribute vec3 aC;
@@ -291,7 +220,7 @@ class Renderer {
             varying vec3 vC, vN, vW;
 
             void main() {
-                vec4 w = uM * vec4(aP, 1.);
+                vec4 w = uM * vec4(aP, 1.0);
                 vW = w.xyz;
                 vN = normalize(mat3(uM) * aN);
                 vC = aC;
@@ -299,7 +228,7 @@ class Renderer {
             }
         `;
 
-        const fs = `
+        const fragmentShader = `
             precision mediump float;
 
             varying vec3 vC, vN, vW;
@@ -309,71 +238,66 @@ class Renderer {
 
             void main() {
                 float light =
-                    .32
-                    + .55 * max(
-                        dot(
-                            normalize(vN),
-                            normalize(vec3(-.3, .9, .45))
-                        ),
-                        0.
-                    )
-                    + .16 * max(
-                        dot(
-                            normalize(vN),
-                            vec3(0., 0., -1.)
-                        ),
-                        0.
+                    0.32 +
+                    0.55 * max(
+                        dot(normalize(vN), normalize(vec3(-0.3, 0.9, 0.45))),
+                        0.0
+                    ) +
+                    0.16 * max(
+                        dot(normalize(vN), vec3(0.0, 0.0, -1.0)),
+                        0.0
                     );
 
-                vec3 col = vC * uTint * mix(
-                    light,
-                    1.35,
-                    min(uGlow, 1.)
-                );
+                vec3 col = vC * uTint *
+                    mix(light, 1.35, min(uGlow, 1.0));
 
                 float dist = length(vW - uEye);
-                float f = 1. - exp(-dist * dist * uFog);
+                float fog = 1.0 - exp(-dist * dist * uFog);
 
                 gl_FragColor = vec4(
-                    mix(
-                        col,
-                        vec3(.016, .031, .055),
-                        min(f, .98)
-                    ),
-                    1.
+                    mix(col, vec3(0.016, 0.031, 0.055), min(fog, 0.98)),
+                    1.0
                 );
             }
         `;
 
-        let compile = (type, s) => {
-            let sh = gl.createShader(type);
+        const compile = (type, source) => {
+            const shader = gl.createShader(type);
 
-            gl.shaderSource(sh, s);
-            gl.compileShader(sh);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
 
-            if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-                throw Error(gl.getShaderInfoLog(sh));
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                throw Error(gl.getShaderInfoLog(shader));
             }
 
-            return sh;
+            return shader;
         };
 
-        let p = this.program = gl.createProgram();
+        const program = this.program = gl.createProgram();
 
-        gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
-        gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
-        gl.linkProgram(p);
+        gl.attachShader(
+            program,
+            compile(gl.VERTEX_SHADER, vertexShader)
+        );
 
-        if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-            throw Error(gl.getProgramInfoLog(p));
+        gl.attachShader(
+            program,
+            compile(gl.FRAGMENT_SHADER, fragmentShader)
+        );
+
+        gl.linkProgram(program);
+
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            throw Error(gl.getProgramInfoLog(program));
         }
 
-        gl.useProgram(p);
+        gl.useProgram(program);
 
         this.loc = {};
 
-        ['aP', 'aN', 'aC'].forEach(a => {
-            this.loc[a] = gl.getAttribLocation(p, a);
+        ['aP', 'aN', 'aC'].forEach(name => {
+            this.loc[name] = gl.getAttribLocation(program, name);
         });
 
         [
@@ -384,44 +308,55 @@ class Renderer {
             'uTint',
             'uGlow',
             'uFog'
-        ].forEach(a => {
-            this.loc[a] = gl.getUniformLocation(p, a);
+        ].forEach(name => {
+            this.loc[name] = gl.getUniformLocation(program, name);
         });
 
         gl.enable(gl.DEPTH_TEST);
         gl.disable(gl.CULL_FACE);
 
+        this._lastMeshBuffer = null;
         this.eye = [0, 0, 0];
 
         this.resize();
     }
 
     resize() {
-        let ratio = Math.min(window.devicePixelRatio || 1, 0.65);
-        let w = Math.min(1280, Math.round(innerWidth * ratio));
-        let h = Math.round(w * innerHeight / innerWidth);
+        const ratio = Math.min(
+            window.devicePixelRatio || 1,
+            0.75
+        );
 
-        this.canvas.width = w;
-        this.canvas.height = h;
+        const width = Math.max(
+            1,
+            Math.min(1280, Math.round(innerWidth * ratio))
+        );
 
-        this.gl.viewport(0, 0, w, h);
+        const height = Math.max(
+            1,
+            Math.round(width * innerHeight / innerWidth)
+        );
+
+        this.canvas.width = width;
+        this.canvas.height = height;
+        this.gl.viewport(0, 0, width, height);
     }
 
-    mesh(g) {
-        let gl = this.gl;
-        let b = gl.createBuffer();
+    mesh(geometry) {
+        const gl = this.gl;
+        const buffer = gl.createBuffer();
 
-        gl.bindBuffer(gl.ARRAY_BUFFER, b);
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
 
         gl.bufferData(
             gl.ARRAY_BUFFER,
-            new Float32Array(g.data),
+            new Float32Array(geometry.data),
             gl.STATIC_DRAW
         );
 
         return {
-            buffer: b,
-            count: g.data.length / 9
+            buffer,
+            count: geometry.data.length / 9
         };
     }
 
@@ -452,60 +387,59 @@ class Renderer {
     }
 
     clear() {
-        let gl = this.gl;
+        const gl = this.gl;
 
         gl.clearColor(0.016, 0.031, 0.055, 1);
-
-        gl.clear(
-            gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT
-        );
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     }
 
     draw(
-    mesh,
-    pos = [0, 0, 0],
-    scale = [1, 1, 1],
-    yaw = 0,
-    glow = 0,
-    tint = [1, 1, 1]
-) {
-    const gl = this.gl;
+        mesh,
+        pos = [0, 0, 0],
+        scale = [1, 1, 1],
+        yaw = 0,
+        glow = 0,
+        tint = [1, 1, 1]
+    ) {
+        const gl = this.gl;
 
-    // Reconfigure vertex attributes only when the mesh changes.
-    if (this._lastMeshBuffer !== mesh.buffer) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, mesh.buffer);
+        // Do not configure the same mesh's attributes repeatedly.
+        if (this._lastMeshBuffer !== mesh.buffer) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, mesh.buffer);
 
-        ['aP', 'aN', 'aC'].forEach((attribute, index) => {
-            const location = this.loc[attribute];
+            ['aP', 'aN', 'aC'].forEach((attribute, index) => {
+                const location = this.loc[attribute];
 
-            if (location < 0) return;
+                if (location < 0) {
+                    return;
+                }
 
-            gl.enableVertexAttribArray(location);
+                gl.enableVertexAttribArray(location);
 
-            gl.vertexAttribPointer(
-                location,
-                3,
-                gl.FLOAT,
-                false,
-                36,
-                index * 12
-            );
-        });
+                gl.vertexAttribPointer(
+                    location,
+                    3,
+                    gl.FLOAT,
+                    false,
+                    36,
+                    index * 12
+                );
+            });
 
-        this._lastMeshBuffer = mesh.buffer;
+            this._lastMeshBuffer = mesh.buffer;
+        }
+
+        gl.uniformMatrix4fv(
+            this.loc.uM,
+            false,
+            M4.model(pos, scale, yaw)
+        );
+
+        gl.uniform3fv(this.loc.uTint, tint);
+        gl.uniform1f(this.loc.uGlow, glow);
+
+        gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
     }
-
-    gl.uniformMatrix4fv(
-        this.loc.uM,
-        false,
-        M4.model(pos, scale, yaw)
-    );
-
-    gl.uniform3fv(this.loc.uTint, tint);
-    gl.uniform1f(this.loc.uGlow, glow);
-
-    gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
-}
 
     clearDepth() {
         this.gl.clear(this.gl.DEPTH_BUFFER_BIT);
@@ -513,9 +447,5 @@ class Renderer {
 }
 
 if (typeof module !== 'undefined') {
-    module.exports = {
-        V3,
-        M4,
-        Geometry
-    };
+    module.exports = { V3, M4, Geometry };
 }

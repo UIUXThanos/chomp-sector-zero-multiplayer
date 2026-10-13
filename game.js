@@ -1,6 +1,8 @@
+
 'use strict';
 
-// CHOMP multiplayer client: the server owns ghosts, pellets, HP, ammo and scoring.
+// CHOMP multiplayer client.
+// The server controls ghosts, pellets, HP, ammo and scoring.
 
 const CELL = 3;
 
@@ -74,9 +76,9 @@ let renderer;
 
 try {
     renderer = new Renderer($('#world'));
-} catch (e) {
+} catch (error) {
     $('#fallback').hidden = false;
-    console.error(e);
+    console.error(error);
 }
 
 if (renderer) {
@@ -102,6 +104,7 @@ function boot() {
     let lastEmptyWarn = 0;
     let projectiles = [];
     let terminalShown = false;
+    let nextMinimapAt = 0;
 
     let me = {
         x: 25.5,
@@ -116,9 +119,9 @@ function boot() {
         dead: false
     };
 
-    let nextMinimapAt = 0;
-
-    // The minimap does not need a full redraw at display refresh rate.
+    // --------------------------------------------------
+    // MULTIPLAYER LOBBY
+    // --------------------------------------------------
 
     const input = document.createElement('div');
 
@@ -126,14 +129,19 @@ function boot() {
 
     input.innerHTML = `
         <h2>MULTIPLAYER</h2>
+
         <p>
-            CHARACTERS: BATMAN / JOKER / WOLVERINE / GHOST RIDER
-            (4 SLOTS)
+            CHARACTERS: BATMAN / JOKER /
+            WOLVERINE / GHOST RIDER (4 SLOTS)
         </p>
 
         <label>
             YOUR NAME
-            <input id="mp-name" maxlength="16" value="PLAYER" />
+            <input
+                id="mp-name"
+                maxlength="16"
+                value="PLAYER"
+            />
         </label>
 
         <label>
@@ -148,7 +156,11 @@ function boot() {
 
         <label>
             INVITE CODE
-            <input id="mp-code" maxlength="6" placeholder="ABC123" />
+            <input
+                id="mp-code"
+                maxlength="6"
+                placeholder="ABC123"
+            />
         </label>
 
         <button id="mp-join">JOIN ROOM</button>
@@ -168,14 +180,18 @@ function boot() {
 
     const $mp = s => input.querySelector(s);
 
-    const status = t => {
-        $mp('#mp-status').textContent = t;
+    const status = text => {
+        $mp('#mp-status').textContent = text;
     };
 
-    function notify(t, seconds = 2) {
-        $('#notification').textContent = t;
+    function notify(text, seconds = 2) {
+        $('#notification').textContent = text;
         noticeUntil = performance.now() + seconds * 1000;
     }
+
+    // --------------------------------------------------
+    // SOCKET EVENTS
+    // --------------------------------------------------
 
     socket.on('connect', () => {
         status('Connected. Create a room or enter an invite code.');
@@ -190,30 +206,59 @@ function boot() {
         joined = true;
         myId = data.id;
 
-        status('ROOM ' + data.code + ' · Share this invite code');
+        status(
+            'ROOM ' + data.code + ' · Share this invite code'
+        );
 
         $mp('#mp-code').value = data.code;
     });
 
-    socket.on('snapshot', s => {
-        room = s;
+    socket.on('snapshot', snapshot => {
+        room = snapshot;
 
-        const p = s.players.find(p => p.id === myId);
+        const p = snapshot.players.find(
+            player => player.id === myId
+        );
+
+        // ----------------------------------------------
+        // FIX: KEEP LOCAL CAMERA AND MOVEMENT SMOOTH
+        // ----------------------------------------------
 
         if (p) {
-            me = { ...me, ...p };
+            const positionError = Math.hypot(
+                me.x - p.x,
+                me.z - p.z
+            );
+
+            // Initialize from the server before playing.
+            // During gameplay, only correct large errors.
+            if (!started || positionError > 2) {
+                me.x = p.x;
+                me.z = p.z;
+            }
+
+            // Copy server-controlled state, but never
+            // overwrite our local x, z, yaw or pitch.
+            const {
+                x,
+                z,
+                yaw,
+                pitch,
+                ...serverFields
+            } = p;
+
+            Object.assign(me, serverFields);
         }
 
-        if (s.phase === 'lobby') {
+        if (snapshot.phase === 'lobby') {
             $mp('#mp-players').textContent =
-                `${s.players.length}/4 players: ${
-                    s.players.map(p => p.name).join(', ')
-                }`;
+                `${snapshot.players.length}/4 players: ` +
+                snapshot.players.map(player => player.name).join(', ');
 
-            $mp('#mp-start').hidden = s.host !== myId;
+            $mp('#mp-start').hidden = snapshot.host !== myId;
             input.hidden = false;
 
-        } else if (s.phase === 'playing') {
+        } else if (snapshot.phase === 'playing') {
             if (!started) {
                 started = true;
                 paused = false;
@@ -225,41 +270,45 @@ function boot() {
                 $('#end').hidden = true;
 
                 document.body.classList.add('playing');
-
                 requestCapture();
             }
 
             if (p?.dead && !terminalShown) {
-                notify('YOU ARE ELIMINATED · SPECTATING', 3);
+                notify(
+                    'YOU ARE ELIMINATED · SPECTATING',
+                    3
+                );
             }
 
         } else if (
-            s.phase === 'finished' &&
+            snapshot.phase === 'finished' &&
             !terminalShown
         ) {
             terminalShown = true;
             started = false;
+
             input.hidden = true;
             $('#end').hidden = false;
 
             $('#end-kicker').textContent =
-                s.winner === 'coop'
+                snapshot.winner === 'coop'
                     ? 'SECTOR SECURED'
                     : 'MATCH FINISHED';
 
             $('#end-title').textContent =
-                s.mode === 'coop'
+                snapshot.mode === 'coop'
                     ? 'GAME OVER'
                     : 'PVP OVER';
 
             $('#end-copy').textContent =
-                s.winner === 'coop'
+                snapshot.winner === 'coop'
                     ? 'All ghost waves cleared!'
-                    : s.winner === 'ghosts'
+                    : snapshot.winner === 'ghosts'
                         ? 'The ghosts won.'
                         : `${
-                            s.players.find(p => p.id === s.winner)?.name
-                            || 'A PLAYER'
+                            snapshot.players.find(
+                                player => player.id === snapshot.winner
+                            )?.name || 'A PLAYER'
                         } WON`;
 
             $('#final-score').textContent = p?.score || 0;
@@ -285,20 +334,21 @@ function boot() {
     });
 
     socket.on('notice', text => {
-        const t = performance.now();
+        const time = performance.now();
 
-        if (t - lastEmptyWarn > 1200) {
+        if (time - lastEmptyWarn > 1200) {
             notify(text, 2.5);
-            lastEmptyWarn = t;
+            lastEmptyWarn = time;
         }
     });
 
-    function send(name, data, cb) {
+    function send(name, data, callback) {
         if (!socket.connected) {
-            return status('Not connected yet');
+            status('Not connected yet');
+            return;
         }
 
-        socket.emit(name, data, cb);
+        socket.emit(name, data, callback);
     }
 
     $mp('#mp-create').onclick = () => {
@@ -308,10 +358,8 @@ function boot() {
                 mode: $mp('#mp-mode').value,
                 name: $mp('#mp-name').value
             },
-            r => {
-                if (r?.error) {
-                    status(r.error);
-                }
+            response => {
+                if (response?.error) status(response.error);
             }
         );
     };
@@ -323,10 +371,8 @@ function boot() {
                 code: $mp('#mp-code').value,
                 name: $mp('#mp-name').value
             },
-            r => {
-                if (r?.error) {
-                    status(r.error);
-                }
+            response => {
+                if (response?.error) status(response.error);
             }
         );
     };
@@ -349,34 +395,34 @@ function boot() {
 
     for (let z = 0; z < 17; z++) {
         for (let x = 0; x < 17; x++) {
-            if (wall(x, z)) {
-                const px = (x + 0.5) * CELL;
-                const pz = (z + 0.5) * CELL;
+            if (!wall(x, z)) continue;
 
-                geo.box(
-                    px, 1.4, pz,
-                    2.99, 2.8, 2.99,
-                    [0.075, 0.12, 0.21]
-                );
+            const px = (x + 0.5) * CELL;
+            const pz = (z + 0.5) * CELL;
 
-                geo.box(
-                    px, 2.83, pz,
-                    3.03, 0.09, 3.03,
-                    [0.10, 0.20, 0.31]
-                );
+            geo.box(
+                px, 1.4, pz,
+                2.99, 2.8, 2.99,
+                [0.075, 0.12, 0.21]
+            );
 
-                neon.box(
-                    px, 2.68, pz,
-                    3.01, 0.035, 3.01,
-                    C.cyan
-                );
+            geo.box(
+                px, 2.83, pz,
+                3.03, 0.09, 3.03,
+                [0.10, 0.20, 0.31]
+            );
 
-                neon.box(
-                    px, 0.15, pz,
-                    3.012, 0.022, 3.012,
-                    [0.06, 0.34, 0.56]
-                );
-            }
+            neon.box(
+                px, 2.68, pz,
+                3.01, 0.035, 3.01,
+                C.cyan
+            );
+
+            neon.box(
+                px, 0.15, pz,
+                3.012, 0.022, 3.012,
+                [0.06, 0.34, 0.56]
+            );
         }
     }
 
@@ -393,6 +439,10 @@ function boot() {
             [0.014, 0.12, 0.19]
         );
     }
+
+    // --------------------------------------------------
+    // MESHES
+    // --------------------------------------------------
 
     const meshes = {
         walls: renderer.mesh(geo),
@@ -508,8 +558,9 @@ function boot() {
 
     meshes.gun = renderer.mesh(gun);
 
-    // Local-axis +Z is the front of every face.
-    // Two eyes + pupils face the camera/player.
+    // --------------------------------------------------
+    // GHOST FACES
+    // --------------------------------------------------
 
     function face(x, y, z, yaw, scale = 1) {
         const sn = Math.sin(yaw);
@@ -549,7 +600,7 @@ function boot() {
     }
 
     // --------------------------------------------------
-    // PLAYER CHARACTERS
+    // CHARACTER MODELS
     // --------------------------------------------------
 
     const costumes = [
@@ -558,52 +609,74 @@ function boot() {
             head: [0.09, 0.11, 0.17],
             cape: [0.02, 0.02, 0.04],
             accent: [0.95, 0.80, 0.20]
-        }, // blocky bat
-
+        },
         {
             body: [0.29, 0.08, 0.40],
             head: [0.83, 0.88, 0.76],
             cape: [0.30, 0.06, 0.38],
             accent: [0.10, 0.82, 0.28]
-        }, // clown
-
+        },
         {
             body: [0.89, 0.72, 0.10],
             head: [0.93, 0.73, 0.23],
             cape: [0.12, 0.16, 0.38],
             accent: [0.12, 0.18, 0.37]
-        }, // claw hero
-
+        },
         {
             body: [0.10, 0.12, 0.13],
             head: [0.82, 0.39, 0.11],
             cape: [0.06, 0.06, 0.08],
             accent: [1, 0.32, 0.04]
-        } // flaming rider
+        }
     ];
 
     function drawPlayer(p) {
         const skin = costumes[p.character % 4] || costumes[0];
+
         const x = p.x;
         const z = p.z;
         const yaw = p.yaw;
 
-        const draw = (pos, sz, tint, glow = 0) => {
+        const drawPart = (pos, size, tint, glow = 0) => {
             renderer.draw(
                 meshes.cube,
                 pos,
-                sz,
+                size,
                 yaw,
                 glow,
                 tint
             );
         };
 
-        draw([x, 0.9, z], [0.7, 0.75, 0.4], skin.body);
-        draw([x, 1.52, z], [0.52, 0.51, 0.52], skin.head);
-        draw([x, 0.37, z - 0.09], [0.24, 0.68, 0.30], skin.body);
-        draw([x, 1.02, z], [0.95, 0.19, 0.48], skin.accent);
-        draw([x, 1.13, z - 0.30], [0.72, 0.9, 0.09], skin.cape);
+        drawPart(
+            [x, 0.9, z],
+            [0.7, 0.75, 0.4],
+            skin.body
+        );
+
+        drawPart(
+            [x, 1.52, z],
+            [0.52, 0.51, 0.52],
+            skin.head
+        );
+
+        drawPart(
+            [x, 0.37, z - 0.09],
+            [0.24, 0.68, 0.30],
+            skin.body
+        );
+
+        drawPart(
+            [x, 1.02, z],
+            [0.95, 0.19, 0.48],
+            skin.accent
+        );
+
+        drawPart(
+            [x, 1.13, z - 0.30],
+            [0.72, 0.9, 0.09],
+            skin.cape
+        );
 
         const sn = Math.sin(yaw);
         const cs = Math.cos(yaw);
@@ -626,9 +699,10 @@ function boot() {
             );
         }
 
+        // Batman-style ears
         if (p.character === 0) {
             for (const side of [-1, 1]) {
-                draw(
+                drawPart(
                     [x + side * 0.18, 1.90, z],
                     [0.15, 0.36, 0.16],
                     skin.head
@@ -636,17 +710,19 @@ function boot() {
             }
         }
 
+        // Joker-style green hair
         if (p.character === 1) {
-            draw(
+            drawPart(
                 [x, 1.9, z],
                 [0.62, 0.25, 0.57],
                 skin.accent
             );
         }
 
+        // Wolverine-style claws
         if (p.character === 2) {
             for (const side of [-1, 1]) {
-                draw(
+                drawPart(
                     [x + side * 0.47, 1.02, z + 0.10],
                     [0.08, 0.34, 0.06],
                     C.white
@@ -654,6 +730,7 @@ function boot() {
             }
         }
 
+        // Ghost Rider-style flames
         if (p.character === 3) {
             for (let i = 0; i < 5; i++) {
                 const a = i * 1.257 + clock * 2;
@@ -687,7 +764,9 @@ function boot() {
         $('#enemy-count').textContent =
             room.mode === 'coop'
                 ? `${room.enemies.length} HOSTILES REMAIN`
-                : `${room.players.filter(p => !p.dead).length} PLAYERS ALIVE`;
+                : `${
+                    room.players.filter(p => !p.dead).length
+                } PLAYERS ALIVE`;
 
         $('#score').textContent =
             String(me.score || 0).padStart(6, '0');
@@ -707,7 +786,7 @@ function boot() {
             me.reloading
                 ? 'RELOADING…'
                 : me.reserve === 0
-                    ? 'EFKEROSES TIN'
+                    ? 'NO RESERVE AMMO'
                     : 'R  RELOAD';
 
         $('#power').hidden = !(me.power || me.egg);
@@ -716,7 +795,8 @@ function boot() {
             $('#power').firstChild.textContent =
                 me.egg.toUpperCase() + ' ';
         } else {
-            $('#power').firstChild.textContent = 'OVERDRIVE ';
+            $('#power').firstChild.textContent =
+                'OVERDRIVE ';
         }
 
         $('#combo').textContent = room.mode.toUpperCase();
@@ -730,40 +810,40 @@ function boot() {
         if (!$('#world').requestPointerLock) return;
 
         try {
-            const p = $('#world').requestPointerLock();
-            p?.catch?.(() => {});
+            const promise = $('#world').requestPointerLock();
+            promise?.catch?.(() => {});
         } catch {}
     }
 
     function move(dt) {
         if (!started || paused || me.dead) return;
 
-        const f =
+        const forward =
             (keys.KeyW ? 1 : 0) -
             (keys.KeyS ? 1 : 0);
 
-        const s =
+        const sideways =
             (keys.KeyD || keys.KeyE ? 1 : 0) -
             (keys.KeyA || keys.KeyQ ? 1 : 0);
 
-        const len = Math.hypot(f, s);
+        const length = Math.hypot(forward, sideways);
 
-        if (len) {
+        if (length) {
             const speed =
                 (keys.ShiftLeft || keys.ShiftRight ? 7 : 4.7) *
                 (me.egg === 'frenzy' ? 1.65 : 1);
 
             const dx =
                 (
-                    Math.sin(me.yaw) * f +
-                    Math.cos(me.yaw) * s
-                ) / len * speed * dt;
+                    Math.sin(me.yaw) * forward +
+                    Math.cos(me.yaw) * sideways
+                ) / length * speed * dt;
 
             const dz =
                 (
-                    -Math.cos(me.yaw) * f +
-                    Math.sin(me.yaw) * s
-                ) / len * speed * dt;
+                    -Math.cos(me.yaw) * forward +
+                    Math.sin(me.yaw) * sideways
+                ) / length * speed * dt;
 
             if (passable(me.x + dx, me.z, 0.25)) {
                 me.x += dx;
@@ -776,6 +856,7 @@ function boot() {
             walking += dt * 10;
         }
 
+        // Send movement about 20 times per second.
         sendAt -= dt;
 
         if (sendAt <= 0) {
@@ -791,7 +872,7 @@ function boot() {
     }
 
     // --------------------------------------------------
-    // RENDERING
+    // RENDER THE GAME
     // --------------------------------------------------
 
     function draw() {
@@ -812,7 +893,7 @@ function boot() {
 
             renderer.camera(
                 eye,
-                eye.map((v, i) => v + forward[i]),
+                eye.map((value, i) => value + forward[i]),
                 1.12,
                 0.0012
             );
@@ -838,16 +919,21 @@ function boot() {
         );
 
         if (room) {
-            // Pickups
+            // ------------------------------------------
+            // PELLETS AND POWER-UPS
+            // ------------------------------------------
+
             for (const item of room.pickups) {
                 if (
                     started &&
-                    Math.hypot(item.x - me.x, item.z - me.z) > 12
-                ) {
-                    continue;
-                }
+                    Math.hypot(
+                        item.x - me.x,
+                        item.z - me.z
+                    ) > 12
+                ) continue;
 
-                const bob = Math.sin(clock * 2 + item.id) * 0.08;
+                const bob =
+                    Math.sin(clock * 2 + item.id) * 0.08;
 
                 renderer.draw(
                     item.type === 'health' || item.type === 'egg'
@@ -856,7 +942,9 @@ function boot() {
 
                     [
                         item.x,
-                        item.type === 'power' ? 0.75 : 0.38 + bob,
+                        item.type === 'power'
+                            ? 0.75
+                            : 0.38 + bob,
                         item.z
                     ],
 
@@ -879,16 +967,22 @@ function boot() {
                 );
             }
 
-            // Ghost enemies
+            // ------------------------------------------
+            // GHOSTS AND THEIR FACES
+            // ------------------------------------------
+
             for (const e of room.enemies) {
                 if (
                     started &&
-                    Math.hypot(e.x - me.x, e.z - me.z) > 32
-                ) {
-                    continue;
-                }
+                    Math.hypot(
+                        e.x - me.x,
+                        e.z - me.z
+                    ) > 18
+                ) continue;
 
-                const gy = 1.1 + Math.sin(clock * 3 + e.phase) * 0.13;
+                const gy =
+                    1.1 +
+                    Math.sin(clock * 3 + e.phase) * 0.13;
 
                 const yaw = Math.atan2(
                     me.x - e.x,
@@ -907,34 +1001,41 @@ function boot() {
                 face(e.x, gy, e.z, yaw);
             }
 
-            // Other players
+            // ------------------------------------------
+            // OTHER PLAYERS
+            // ------------------------------------------
+
             for (const p of room.players) {
                 if (p.id === myId || p.dead) continue;
 
                 if (
                     started &&
-                    Math.hypot(p.x - me.x, p.z - me.z) > 18
-                ) {
-                    continue;
-                }
+                    Math.hypot(
+                        p.x - me.x,
+                        p.z - me.z
+                    ) > 18
+                ) continue;
 
                 drawPlayer(p);
             }
         }
 
-        // Projectiles
-        for (const q of projectiles) {
-            const col =
-                q.projectile === 'banana'
+        // ----------------------------------------------
+        // PROJECTILES
+        // ----------------------------------------------
+
+        for (const projectile of projectiles) {
+            const color =
+                projectile.projectile === 'banana'
                     ? [1, 0.9, 0.05]
-                    : q.projectile === 'poop'
+                    : projectile.projectile === 'poop'
                         ? [0.32, 0.17, 0.07]
                         : C.yellow;
 
             const pieces =
-                q.projectile === 'banana'
+                projectile.projectile === 'banana'
                     ? 4
-                    : q.projectile === 'poop'
+                    : projectile.projectile === 'poop'
                         ? 3
                         : 2;
 
@@ -942,33 +1043,40 @@ function boot() {
                 const t = (i + 1) / (pieces + 1);
 
                 renderer.draw(
-                    q.projectile === 'banana'
+                    projectile.projectile === 'banana'
                         ? meshes.banana
-                        : q.projectile === 'poop'
+                        : projectile.projectile === 'poop'
                             ? meshes.poop
                             : meshes.sphere,
 
                     [
-                        q.x + (q.tx - q.x) * t,
+                        projectile.x +
+                            (projectile.tx - projectile.x) * t,
+
                         1.12,
-                        q.z + (q.tz - q.z) * t
+
+                        projectile.z +
+                            (projectile.tz - projectile.z) * t
                     ],
 
-                    q.projectile === 'bullet'
+                    projectile.projectile === 'bullet'
                         ? [0.08, 0.08, 0.08]
                         : [0.50, 0.50, 0.50],
 
                     clock * 3,
                     1,
 
-                    q.projectile === 'bullet'
-                        ? col
+                    projectile.projectile === 'bullet'
+                        ? color
                         : [1, 1, 1]
                 );
             }
         }
 
-        // First-person weapon
+        // ----------------------------------------------
+        // FIRST-PERSON GUN
+        // ----------------------------------------------
+
         if (started && !me.dead) {
             renderer.clearDepth();
 
@@ -1059,20 +1167,27 @@ function boot() {
     // --------------------------------------------------
 
     function frame(time) {
-        const dt = Math.min(0.04, (time - last) / 1000);
+        const dt = Math.min(
+            0.04,
+            (time - last) / 1000
+        );
 
         last = time;
         clock += dt;
 
-        shotFlash = Math.max(0, shotFlash - dt);
+        shotFlash = Math.max(
+            0,
+            shotFlash - dt
+        );
 
         projectiles = projectiles.filter(
-            p => (p.life -= dt) > 0
+            projectile => (projectile.life -= dt) > 0
         );
 
         move(dt);
         draw();
 
+        // Refresh minimap 8 times a second.
         if (time >= nextMinimapAt) {
             mini();
             nextMinimapAt = time + 125;
@@ -1103,16 +1218,27 @@ function boot() {
         keys[e.code] = true;
 
         if (
-            ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyR', 'Space']
-                .includes(e.code)
+            [
+                'KeyW',
+                'KeyA',
+                'KeyS',
+                'KeyD',
+                'KeyR',
+                'Space'
+            ].includes(e.code)
         ) {
             e.preventDefault();
         }
 
-        if (e.code === 'KeyR' && !e.repeat && started) {
+        // R is the ONLY way to start reloading.
+        if (
+            e.code === 'KeyR' &&
+            !e.repeat &&
+            started
+        ) {
             if (me.reserve <= 0) {
                 notify(
-                    'EFKEROSES TIN · PIAE JITRINOUKIA',
+                    'NO RESERVE AMMO · COLLECT YELLOW PELLETS',
                     2.2
                 );
             } else {
@@ -1148,7 +1274,9 @@ function boot() {
                 Math.min(
                     0.9,
                     me.pitch -
-                    e.movementY * 0.0018 * mouseSensitivity
+                        e.movementY *
+                        0.0018 *
+                        mouseSensitivity
                 )
             );
         }
@@ -1166,25 +1294,24 @@ function boot() {
 
         if (document.pointerLockElement !== $('#world')) {
             requestCapture();
+            return;
+        }
 
-        } else {
-            if (me.ammo <= 0) {
-                const t = performance.now();
+        if (me.ammo <= 0) {
+            const time = performance.now();
 
-                if (t - lastEmptyWarn > 1400) {
-                    notify(
-                        me.reserve > 0
-                            ? 'ELIPSEN MANA MOU · TSILLA R'
-                            : 'EFKEROSEN TELIA · PIAE JITRINOUKIA',
-                        2.5
-                    );
+            if (time - lastEmptyWarn > 1400) {
+                notify(
+                    me.reserve > 0
+                        ? 'ELIPSEN MANA MOU · TSILLA R'
+                        : 'EEE ELIPSAN OULES · SOROPSE JITRINOUKIA',
+                    2.5
+                );
 
-                    lastEmptyWarn = t;
-                }
-
-            } else {
-                socket.emit('shoot');
+                lastEmptyWarn = time;
             }
+        } else {
+            socket.emit('shoot');
         }
     });
 
@@ -1193,7 +1320,7 @@ function boot() {
     });
 
     // --------------------------------------------------
-    // WINDOW EVENTS
+    // WINDOW AND MENU CONTROLS
     // --------------------------------------------------
 
     window.addEventListener('resize', () => {
@@ -1203,10 +1330,6 @@ function boot() {
     window.addEventListener('blur', () => {
         keys = {};
     });
-
-    // --------------------------------------------------
-    // UI BUTTONS
-    // --------------------------------------------------
 
     $('#play').onclick = () => {
         if (!joined) {
@@ -1226,9 +1349,13 @@ function boot() {
         notify('Create a new room to restart a match.');
     };
 
-    $('#again').onclick = () => location.reload();
+    $('#again').onclick = () => {
+        location.reload();
+    };
 
-    $('#back-home').onclick = () => location.reload();
+    $('#back-home').onclick = () => {
+        location.reload();
+    };
 
     $('#how').onclick = () => {
         $('#instructions').showModal();
@@ -1269,14 +1396,18 @@ function boot() {
     $('#fullscreen').onclick = () => {
         document.fullscreenElement
             ? document.exitFullscreen()
-            : document.documentElement.requestFullscreen().catch(() => {});
+            : document.documentElement
+                .requestFullscreen()
+                .catch(() => {});
     };
 
     // --------------------------------------------------
-    // JOIN ROOM FROM URL
+    // JOIN ROOM USING URL PARAMETER
     // --------------------------------------------------
 
-    const urlRoom = new URLSearchParams(location.search).get('room');
+    const urlRoom = new URLSearchParams(
+        location.search
+    ).get('room');
 
     if (urlRoom) {
         $mp('#mp-code').value = urlRoom.toUpperCase();
