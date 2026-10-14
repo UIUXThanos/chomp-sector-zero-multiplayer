@@ -67,7 +67,7 @@ const COLORS = [
     [0.92, 1, 0.22]
 ];
 
-const TICK_MS = 100;
+const TICK_MS = 200;
 
 const rooms = new Map();
 
