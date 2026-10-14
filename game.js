@@ -241,38 +241,35 @@ function boot() {
     }
 
     function connectionFailure(reason) {
-        console.error('CHOMP match restore failed:', reason);
+    console.error('CHOMP match restore failed:', reason);
 
-        reconnecting = true;
-        waitingForPlayer = false;
-        paused = true;
-        keys = {};
+    reconnecting = true;
+    waitingForPlayer = false;
+    paused = true;
+    keys = {};
+    pendingMoves = [];
+    moveBaseReady = false;
 
-        clearSession();
-
-        notify(
-            'MATCH LOST - REFRESH TO CREATE A NEW ROOM',
-            3600
-        );
-
-        status(
-            reason ||
-            'Previous room unavailable. Refresh to start again.'
-        );
-
-        // Do not silently switch away from an active
-        // first-person camera and imply that everything works.
-        if (!started) {
-            input.hidden = false;
-            $('#landing').hidden = false;
-            $('#hud').hidden = true;
-
-            document.body.classList.remove('playing');
-
-            reconnecting = false;
-            paused = false;
-        }
+    // Keep the first-person camera and HUD visible.
+    // Never silently switch to the home screen.
+    if (started) {
+        $('#landing').hidden = true;
+        $('#hud').hidden = false;
+        input.hidden = true;
+        $('#pause').hidden = true;
+        document.body.classList.add('playing');
     }
+
+    notify(
+        'MATCH CONNECTION FAILED - WAITING FOR RECOVERY',
+        3600
+    );
+
+    status(reason || 'Unable to restore your match.');
+
+    // Do not clear the saved session automatically.
+    // It may still be recoverable after a temporary outage.
+}
 
     function restoreSession() {
         if (!savedSession?.code || !savedSession?.token) {
