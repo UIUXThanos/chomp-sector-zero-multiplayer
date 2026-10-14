@@ -1379,6 +1379,7 @@ socket.io.on('reconnect', () => {
     $('#world').addEventListener('mousedown', e => {
         if (
             e.button !== 0 ||
+            !socket.connected ||
             !started ||
             paused ||
             me.dead
