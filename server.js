@@ -39,7 +39,11 @@ app.get('/healthz', (_req, res) => {
 });
 
 const server = createServer(app);
-const io = new Server(server, { maxHttpBufferSize: 10000 });
+const io = new Server(server, {
+    maxHttpBufferSize: 10000,
+    pingInterval: 25000,
+    pingTimeout: 30000
+});
 
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 4;
