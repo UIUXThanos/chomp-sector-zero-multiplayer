@@ -330,6 +330,13 @@ function boot() {
         resetMovement(me.x, me.z);
 
         paused = false;
+        $('#pause').hidden = true;
+$('#landing').hidden = true;
+$('#hud').hidden = false;
+
+document.body.classList.add('playing');
+
+notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
 
         if (started) {
             $('#landing').hidden = true;
