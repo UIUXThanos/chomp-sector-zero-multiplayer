@@ -201,53 +201,153 @@ function boot() {
     // SOCKET EVENTS
     // --------------------------------------------------
 
+        let savedSession = null;
+
+    try {
+        savedSession = JSON.parse(
+            sessionStorage.getItem('chompSession') || 'null'
+        );
+    } catch {}
+
+    let reconnecting = false;
+
+    function rememberSession(data) {
+        savedSession = {
+            code: data.code,
+            token: data.token
+        };
+
+        try {
+            sessionStorage.setItem(
+                'chompSession',
+                JSON.stringify(savedSession)
+            );
+        } catch {}
+    }
+
+    function resetMovement(x, z) {
+        pendingMoves = [];
+        lastAckSeq = 0;
+        nextMoveSeq = 0;
+        lastSentX = x;
+        lastSentZ = z;
+        moveBaseReady = false;
+    }
+
     socket.on('connect', () => {
-    if (!joined) {
-        status('Connected. Create a room or enter an invite code.');
-    }
-});
+        if (savedSession?.code && savedSession?.token) {
+            reconnecting = true;
+            paused = true;
 
-socket.on('disconnect', reason => {
-    console.warn('CHOMP connection lost:', reason);
+            socket.emit(
+                'resumeRoom',
+                savedSession,
+                reply => {
+                    if (reply?.ok) return;
 
-    // Keep the first-person camera and HUD visible.
-    // Do not silently switch to the overhead menu camera.
-    paused = true;
-    keys = {};
-    pendingMoves = [];
-    moveBaseReady = false;
+                    // Session expired or server restarted.
+                    reconnecting = false;
+                    joined = false;
+                    started = false;
+                    paused = false;
+                    myId = null;
+                    room = null;
+                    savedSession = null;
 
-    notify('CONNECTION LOST · RECONNECTING...', 5);
+                    try {
+                        sessionStorage.removeItem(
+                            'chompSession'
+                        );
+                    } catch {}
 
-    if (document.pointerLockElement) {
-        document.exitPointerLock();
-    }
-});
+                    $('#hud').hidden = true;
+                    $('#landing').hidden = false;
 
-socket.io.on('reconnect', () => {
-    console.log('CHOMP: connection restored');
+                    document.body.classList.remove(
+                        'playing'
+                    );
 
-    notify('CONNECTION RESTORED · REJOINING...', 3);
+                    input.hidden = false;
 
-    // Keep the current game visible.
-    paused = true;
-    keys = {};
-    pendingMoves = [];
-    moveBaseReady = false;
-});
+                    status(
+                        reply?.error ||
+                        'Previous room unavailable. Create a new room.'
+                    );
+                }
+            );
+        } else {
+            status(
+                'Connected. Create a room or enter an invite code.'
+            );
+        }
+    });
+
+    socket.on('disconnect', reason => {
+        console.warn('CHOMP disconnected:', reason);
+
+        // Freeze gameplay while preserving the camera.
+        reconnecting = true;
+        paused = true;
+        keys = {};
+        pendingMoves = [];
+        moveBaseReady = false;
+
+        notify(
+            'CONNECTION LOST · RECONNECTING...',
+            5
+        );
+
+        if (document.pointerLockElement) {
+            document.exitPointerLock();
+        }
+    });
 
     socket.on('joined', data => {
         joined = true;
         myId = data.id;
 
+        rememberSession(data);
+
         status(
-            'ROOM ' + data.code + ' · Share this invite code'
+            'ROOM ' + data.code +
+            ' · Share this invite code'
         );
 
         $mp('#mp-code').value = data.code;
-        pendingMoves = [];
-        moveBaseReady = false;
+
+        resetMovement(me.x, me.z);
     });
+
+    socket.on('resumed', data => {
+        joined = true;
+        myId = data.id;
+
+        rememberSession(data);
+
+        reconnecting = false;
+        keys = {};
+
+        resetMovement(me.x, me.z);
+
+        paused = false;
+
+        if (started) {
+            $('#landing').hidden = true;
+            $('#hud').hidden = false;
+            input.hidden = true;
+
+            notify(
+                'RECONNECTED · CLICK GAME TO AIM',
+                4
+            );
+        } else {
+            status(
+                'ROOM ' + data.code +
+                ' · Connection restored'
+            );
+        }
+    });
+
 
     socket.on('snapshot', snapshot => {
         room = snapshot;
@@ -884,7 +984,13 @@ socket.io.on('reconnect', () => {
     }
 
     function move(dt) {
-        if (!started || paused || me.dead) return;
+        if (
+            !started ||
+            paused ||
+            reconnecting ||
+            !socket.connected ||
+            me.dead
+        ) return;
 
         const forward =
             (keys.KeyW ? 1 : 0) -
@@ -1366,6 +1472,7 @@ socket.io.on('reconnect', () => {
         if (
             e.button !== 0 ||
             !socket.connected ||
+            reconnecting ||
             !started ||
             paused ||
             me.dead
@@ -1421,6 +1528,7 @@ socket.io.on('reconnect', () => {
     };
 
     $('#resume').onclick = () => {
+        if (!socket.connected || reconnecting) return;
         paused = false;
         $('#pause').hidden = true;
         requestCapture();
@@ -1431,10 +1539,16 @@ socket.io.on('reconnect', () => {
     };
 
     $('#again').onclick = () => {
+        try {
+            sessionStorage.removeItem('chompSession');
+        } catch {}
         location.reload();
     };
 
     $('#back-home').onclick = () => {
+        try {
+            sessionStorage.removeItem('chompSession');
+        } catch {}
         location.reload();
     };
 

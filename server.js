@@ -3,7 +3,7 @@
 
 const express = require('express');
 const { createServer } = require('node:http');
-const { randomInt } = require('node:crypto');
+const { randomInt, randomBytes } = require('node:crypto');
 const path = require('node:path');
 const { Server } = require('socket.io');
 
@@ -71,7 +71,9 @@ const COLORS = [
     [0.92, 1, 0.22]
 ];
 
-const TICK_MS = 200;
+const TICK_MS = 100;
+const SNAPSHOT_MS = 200;
+const RECONNECT_GRACE_MS = 30000;
 
 const rooms = new Map();
 
@@ -333,7 +335,10 @@ function join(socket, room, name) {
     const p = {
         id: socket.id,
         name: acceptName(name),
-        character
+        character,
+        token: randomBytes(24).toString('hex'),
+        connected: true,
+        disconnectedAt: 0
     };
 
     room.players.set(socket.id, p);
@@ -341,10 +346,11 @@ function join(socket, room, name) {
 
     socket.join(room.code);
     socket.data.code = room.code;
-
+    socket.data.playerId = p.id;
     socket.emit('joined', {
         code: room.code,
-        id: socket.id
+        id: p.id,
+        token: p.token
     });
 
     broadcast(room);
@@ -353,25 +359,79 @@ function join(socket, room, name) {
 
 function leave(socket) {
     const room = rooms.get(socket.data.code);
+    const p = room?.players.get(socket.data.playerId);
 
-    if (!room) return;
+    if (!p || p.id !== socket.id) return;
 
-    room.players.delete(socket.id);
-    socket.leave(room.code);
-    delete socket.data.code;
-
-    if (!room.players.size) {
-        rooms.delete(room.code);
-        return;
-    }
-
-    if (room.host === socket.id) {
-        room.host = room.players.keys().next().value;
-    }
+    // Keep this player's place for 30 seconds.
+    p.connected = false;
+    p.disconnectedAt = now();
 
     broadcast(room);
 }
 
+function resume(socket, input, callback) {
+    if (socket.data.code) {
+        return callback?.({error: 'Already in a room'});
+    }
+
+    const room = rooms.get(
+        String(input?.code || '').toUpperCase()
+    );
+
+    const token = String(input?.token || '');
+
+    const p = room && [...room.players.values()]
+        .find(player => player.token === token);
+
+    if (
+        !p ||
+        p.connected ||
+        !p.disconnectedAt ||
+        now() - p.disconnectedAt > RECONNECT_GRACE_MS
+    ) {
+        return callback?.({
+            error: 'Match unavailable. Create a new room.'
+        });
+    }
+
+    // Replace the old socket ID with the new one,
+    // without resetting the player's gameplay state.
+    const previousId = p.id;
+
+    room.players.delete(previousId);
+
+    p.id = socket.id;
+    p.connected = true;
+    p.disconnectedAt = 0;
+    p.lastMoveSeq = 0;
+    p.lastMoveAt = now();
+
+    room.players.set(p.id, p);
+
+    if (room.host === previousId) {
+        room.host = p.id;
+    }
+
+    if (room.winner === previousId) {
+        room.winner = p.id;
+    }
+
+    socket.join(room.code);
+
+    socket.data.code = room.code;
+    socket.data.playerId = p.id;
+
+    socket.emit('resumed', {
+        id: p.id,
+        code: room.code,
+        token: p.token
+    });
+
+    callback?.({ok: true});
+
+    broadcast(room);
+}
 // Movement follows the same collision rules as the client.
 // A packet represents a short endpoint movement,
 // so test both legal axis orders.
@@ -677,9 +737,15 @@ function collectPickups(
 
 function updateGhosts(room, time, dt) {
     const living = [...room.players.values()]
-        .filter(p => !p.dead);
+        .filter(p => !p.dead && p.connected);
 
     if (!living.length) {
+        if (
+            [...room.players.values()]
+                .some(p => !p.dead && !p.connected)
+        ) {
+            return;
+        }
         room.phase = 'finished';
         room.winner = 'ghosts';
         return;
@@ -809,6 +875,9 @@ function updateGhosts(room, time, dt) {
 }
 
 io.on('connection', socket => {
+    socket.on('resumeRoom', (data, callback) =>
+        resume(socket, data, callback)
+    );
     socket.on('createRoom', (data, callback) => {
         if (socket.data.code) {
             callback?.({ error: 'Already in a room' });
@@ -945,6 +1014,7 @@ io.on('connection', socket => {
 
 // Main server simulation loop.
 let lastTick = now();
+let lastSnapshotAt = now();
 
 setInterval(() => {
     const time = now();
@@ -958,6 +1028,26 @@ setInterval(() => {
     lastTick = time;
 
     for (const room of rooms.values()) {
+        // Remove expired disconnected players.
+        for (const p of [...room.players.values()]) {
+            if (
+                !p.connected &&
+                time - p.disconnectedAt >= RECONNECT_GRACE_MS
+            ) {
+                room.players.delete(p.id);
+
+                if (room.host === p.id) {
+                    room.host =
+                        room.players.keys().next().value || null;
+                }
+            }
+        }
+
+        if (!room.players.size) {
+            rooms.delete(room.code);
+            continue;
+        }
+
         if (room.phase === 'playing') {
             for (const p of room.players.values()) {
                 if (p.egg && p.eggUntil <= time) {
@@ -981,7 +1071,9 @@ setInterval(() => {
                     p.reloadUntil = 0;
                 }
 
-                collectPickups(room, p, time);
+                if (p.connected) {
+                    collectPickups(room, p, time);
+                }
             }
 
             if (room.mode === 'coop') {
@@ -999,7 +1091,13 @@ setInterval(() => {
 
         // Keep the snapshot format
         // expected by game.js.
-        broadcast(room);
+        if (time - lastSnapshotAt >= SNAPSHOT_MS) {
+            broadcast(room);
+        }
+    }
+
+    if (time - lastSnapshotAt >= SNAPSHOT_MS) {
+        lastSnapshotAt = time;
     }
 }, TICK_MS);
 
