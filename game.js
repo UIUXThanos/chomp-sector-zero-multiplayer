@@ -225,29 +225,15 @@ socket.on('disconnect', reason => {
 });
 
 socket.io.on('reconnect', () => {
-    // Socket.IO may reconnect with a NEW player ID.
-    // The old private room membership is no longer valid.
-    // Require a fresh room join instead of pretending
-    // the previous multiplayer match is still connected.
-    console.warn('CHOMP connection restored; room must be rejoined.');
+    console.log('CHOMP: connection restored');
 
-    joined = false;
-    myId = null;
-    started = false;
-    paused = false;
+    notify('CONNECTION RESTORED · REJOINING...', 3);
+
+    // Keep the current game visible.
+    paused = true;
     keys = {};
-    room = null;
     pendingMoves = [];
     moveBaseReady = false;
-
-    $('#hud').hidden = true;
-    $('#pause').hidden = true;
-    $('#landing').hidden = false;
-    $('#end').hidden = true;
-    document.body.classList.remove('playing');
-
-    input.hidden = false;
-    status('Connection restored. Create or join a new room.');
 });
 
     socket.on('joined', data => {
