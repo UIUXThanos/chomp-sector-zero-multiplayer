@@ -202,19 +202,53 @@ function boot() {
     // --------------------------------------------------
 
     socket.on('connect', () => {
+    if (!joined) {
         status('Connected. Create a room or enter an invite code.');
-    });
+    }
+});
 
-    socket.on('disconnect', () => {
-        status('Disconnected. Refresh to reconnect.');
-        started = false;
-        paused = true;
-        keys = {};
-        pendingMoves = [];
-        moveBaseReady = false;
-        notify('SERVER DISCONNECTED - REFRESH TO REJOIN', 5);
-        if (document.pointerLockElement) document.exitPointerLock();
-    });
+socket.on('disconnect', reason => {
+    console.warn('CHOMP connection lost:', reason);
+
+    // Keep the first-person camera and HUD visible.
+    // Do not silently switch to the overhead menu camera.
+    paused = true;
+    keys = {};
+    pendingMoves = [];
+    moveBaseReady = false;
+
+    notify('CONNECTION LOST · RECONNECTING...', 5);
+
+    if (document.pointerLockElement) {
+        document.exitPointerLock();
+    }
+});
+
+socket.io.on('reconnect', () => {
+    // Socket.IO may reconnect with a NEW player ID.
+    // The old private room membership is no longer valid.
+    // Require a fresh room join instead of pretending
+    // the previous multiplayer match is still connected.
+    console.warn('CHOMP connection restored; room must be rejoined.');
+
+    joined = false;
+    myId = null;
+    started = false;
+    paused = false;
+    keys = {};
+    room = null;
+    pendingMoves = [];
+    moveBaseReady = false;
+
+    $('#hud').hidden = true;
+    $('#pause').hidden = true;
+    $('#landing').hidden = false;
+    $('#end').hidden = true;
+    document.body.classList.remove('playing');
+
+    input.hidden = false;
+    status('Connection restored. Create or join a new room.');
+});
 
     socket.on('joined', data => {
         joined = true;
