@@ -97,6 +97,14 @@ function boot() {
     let clock = 0;
     let last = performance.now();
     let sendAt = 0;
+    let nextMoveSeq = 0;
+    let lastAckSeq = 0;
+    let lastSentX = 25.5;
+    let lastSentZ = 28.5;
+    let pendingMoves = [];
+    let moveBaseReady = false;
+    let moveRejects = 0;
+    let eliminatedNoticeShown = false;
     let mouseSensitivity = 1;
     let shotFlash = 0;
     let walking = 0;
@@ -200,6 +208,12 @@ function boot() {
     socket.on('disconnect', () => {
         status('Disconnected. Refresh to reconnect.');
         started = false;
+        paused = true;
+        keys = {};
+        pendingMoves = [];
+        moveBaseReady = false;
+        notify('SERVER DISCONNECTED - REFRESH TO REJOIN', 5);
+        if (document.pointerLockElement) document.exitPointerLock();
     });
 
     socket.on('joined', data => {
@@ -211,6 +225,8 @@ function boot() {
         );
 
         $mp('#mp-code').value = data.code;
+        pendingMoves = [];
+        moveBaseReady = false;
     });
 
     socket.on('snapshot', snapshot => {
@@ -220,34 +236,18 @@ function boot() {
             player => player.id === myId
         );
 
-        // ----------------------------------------------
-        // FIX: KEEP LOCAL CAMERA AND MOVEMENT SMOOTH
-        // ----------------------------------------------
-
+        // Server owns HP, ammo and pickups. The camera is predicted locally;
+        // only acknowledged movement can adjust that prediction.
         if (p) {
-            const positionError = Math.hypot(
-                me.x - p.x,
-                me.z - p.z
-            );
-
-            // Initialize from the server before playing.
-            // While playing, do not snap the camera to delayed
-            // server positions when sprinting with Shift.
-            if (!started) {
+            if (!moveBaseReady || snapshot.phase !== 'playing') {
                 me.x = p.x;
                 me.z = p.z;
+                lastSentX = p.x;
+                lastSentZ = p.z;
+                pendingMoves = [];
+                moveBaseReady = true;
             }
-
-            // Copy server-controlled state, but never
-            // overwrite our local x, z, yaw or pitch.
-            const {
-                x,
-                z,
-                yaw,
-                pitch,
-                ...serverFields
-            } = p;
-
+            const { x, z, yaw, pitch, ...serverFields } = p;
             Object.assign(me, serverFields);
         }
 
@@ -264,6 +264,15 @@ function boot() {
                 started = true;
                 paused = false;
                 terminalShown = false;
+                eliminatedNoticeShown = false;
+                if (p) {
+                    me.x = p.x;
+                    me.z = p.z;
+                    lastSentX = p.x;
+                    lastSentZ = p.z;
+                    pendingMoves = [];
+                    moveBaseReady = true;
+                }
 
                 input.hidden = true;
                 $('#landing').hidden = true;
@@ -274,7 +283,9 @@ function boot() {
                 requestCapture();
             }
 
-            if (p?.dead && !terminalShown) {
+            if (p?.dead && !eliminatedNoticeShown) {
+                eliminatedNoticeShown = true;
+                keys = {};
                 notify(
                     'YOU ARE ELIMINATED · SPECTATING',
                     3
@@ -321,6 +332,42 @@ function boot() {
         }
 
         updateHud();
+    });
+
+    // Each reply identifies precisely which movement update was processed.
+    // Replaying unacknowledged movement prevents corrections from using old
+    // positions, and makes server rejections visible rather than silent.
+    socket.on('moveAck', ack => {
+        if (!ack || !moveBaseReady || !started) return;
+        const seq = Number(ack.seq);
+        if (!Number.isSafeInteger(seq)) return;
+        if (!Number.isFinite(ack.x) || !Number.isFinite(ack.z)) return;
+        if (seq <= (lastAckSeq || 0)) return;
+        lastAckSeq = seq;
+
+        pendingMoves = pendingMoves.filter(m => m.seq > seq);
+
+        let x = ack.x;
+        let z = ack.z;
+        for (const m of pendingMoves) {
+            // Predict only movement that stays outside walls.
+            if (passable(x + m.dx, z, 0.25)) x += m.dx;
+            if (passable(x, z + m.dz, 0.25)) z += m.dz;
+        }
+
+        const error = Math.hypot(me.x - x, me.z - z);
+        if (!ack.accepted || error > 0.65) {
+            me.x = x;
+            me.z = z;
+        }
+        // Keep outbound deltas relative to the latest prediction.
+        if (!ack.accepted) {
+            moveRejects++;
+            if (moveRejects === 5) notify('MOVEMENT RESYNCED WITH SERVER', 2);
+            lastSentX = me.x;
+            lastSentZ = me.z;
+            pendingMoves = [];
+        }
     });
 
     socket.on('shot', shot => {
@@ -857,13 +904,23 @@ function boot() {
             walking += dt * 10;
         }
 
-        // Send movement about 20 times per second.
+        // Send movement at about 20 Hz. Record every pending displacement
+        // so that acknowledged server positions can be reconciled correctly.
         sendAt -= dt;
-
-        if (sendAt <= 0) {
+        if (sendAt <= 0 && socket.connected) {
             sendAt = 0.05;
-
+            const seq = ++nextMoveSeq;
+            pendingMoves.push({
+                seq,
+                dx: me.x - lastSentX,
+                dz: me.z - lastSentZ
+            });
+            // Guard against unbounded memory growth after a lost connection.
+            if (pendingMoves.length > 120) pendingMoves.shift();
+            lastSentX = me.x;
+            lastSentZ = me.z;
             socket.emit('move', {
+                seq,
                 x: me.x,
                 z: me.z,
                 yaw: me.yaw,
@@ -1225,7 +1282,9 @@ function boot() {
                 'KeyS',
                 'KeyD',
                 'KeyR',
-                'Space'
+                'Space',
+                'ShiftLeft',
+                'ShiftRight'
             ].includes(e.code)
         ) {
             e.preventDefault();

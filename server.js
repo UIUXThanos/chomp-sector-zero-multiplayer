@@ -192,7 +192,8 @@ function spawn(room, p) {
         egg: null,
         eggUntil: 0,
         lastShotAt: 0,
-        lastMoveAt: time
+        lastMoveAt: time,
+        lastMoveSeq: 0
     });
 }
 
@@ -367,66 +368,70 @@ function leave(socket) {
     broadcast(room);
 }
 
-// --------------------------------------------------
-// SPRINT MOVEMENT FIX
-//
-// The browser applies movement one axis at a time:
-// X first, then Z.
-//
-// Previously, the server checked one straight diagonal
-// path. That could incorrectly reject valid movement
-// around a wall corner, especially when sprinting.
-//
-// Validate an X-then-Z route instead.
-// --------------------------------------------------
+// Movement follows the same collision rules as the client.
+// A packet represents a short endpoint movement,
+// so test both legal axis orders.
 
-function movementPathClear(x1, z1, x2, z2) {
-    const radius = 0.25;
+function axisPathClear(x1, z1, x2, z2, xFirst) {
+    const step = 0.12;
+    const r = 0.25;
 
-    // Validate movement along X while Z stays constant.
-    const xDistance = Math.abs(x2 - x1);
-    const xSteps = Math.max(1, Math.ceil(xDistance / 0.2));
+    const path = xFirst
+        ? [[x1, z1, x2, z1], [x2, z1, x2, z2]]
+        : [[x1, z1, x1, z2], [x1, z2, x2, z2]];
 
-    for (let i = 1; i <= xSteps; i++) {
-        const t = i / xSteps;
-        const x = x1 + (x2 - x1) * t;
+    for (const [a, b, c, d] of path) {
+        const n = Math.max(
+            1,
+            Math.ceil(Math.hypot(c - a, d - b) / step)
+        );
 
-        if (!passable(x, z1, radius)) {
-            return false;
-        }
-    }
+        for (let i = 1; i <= n; i++) {
+            const t = i / n;
 
-    // Validate movement along Z at the new X position.
-    const zDistance = Math.abs(z2 - z1);
-    const zSteps = Math.max(1, Math.ceil(zDistance / 0.2));
-
-    for (let i = 1; i <= zSteps; i++) {
-        const t = i / zSteps;
-        const z = z1 + (z2 - z1) * t;
-
-        if (!passable(x2, z, radius)) {
-            return false;
+            if (!passable(
+                a + (c - a) * t,
+                b + (d - b) * t,
+                r
+            )) {
+                return false;
+            }
         }
     }
 
     return true;
 }
 
-// IMPORTANT: Rejected movement does not reset lastMoveAt.
-function receiveMovement(p, input) {
+function movementPathClear(x1, z1, x2, z2) {
+    if (!passable(x2, z2, 0.25)) return false;
+
+    return axisPathClear(x1, z1, x2, z2, true) ||
+        axisPathClear(x1, z1, x2, z2, false);
+}
+
+// Validate movement and tell the browser which update
+// was accepted or rejected.
+function receiveMovement(room, p, input, socket) {
     if (!input || typeof input !== 'object') return;
 
     const x = Number(input.x);
     const z = Number(input.z);
     const yaw = Number(input.yaw);
     const pitch = Number(input.pitch);
+    const seq = Number(input.seq);
 
-    if (![x, z, yaw, pitch].every(Number.isFinite)) return;
+    if (
+        ![x, z, yaw, pitch].every(Number.isFinite) ||
+        !Number.isSafeInteger(seq) ||
+        seq <= p.lastMoveSeq
+    ) return;
+
+    p.lastMoveSeq = seq;
+    p.yaw = clamp(yaw, -1e6, 1e6);
+    p.pitch = clamp(pitch, -0.9, 0.9);
 
     const time = now();
     const frenzy = p.egg === 'frenzy' && p.eggUntil > time;
-
-    // Sprint + Frenzy, with tolerance for network delays.
     const maximumSpeed = 7 * (frenzy ? 1.65 : 1);
 
     const elapsed = clamp(
@@ -436,19 +441,32 @@ function receiveMovement(p, input) {
     );
 
     const allowedDistance =
-        0.8 + maximumSpeed * elapsed * 1.5;
+        0.35 + maximumSpeed * elapsed * 1.35;
 
     const distance = Math.hypot(x - p.x, z - p.z);
 
-    p.yaw = clamp(yaw, -1e6, 1e6);
-    p.pitch = clamp(pitch, -0.9, 0.9);
+    const accepted =
+        distance <= allowedDistance &&
+        movementPathClear(p.x, p.z, x, z);
 
-    if (distance > allowedDistance) return;
-    if (!movementPathClear(p.x, p.z, x, z)) return;
+    if (accepted) {
+        const oldX = p.x;
+        const oldZ = p.z;
 
-    p.x = x;
-    p.z = z;
-    p.lastMoveAt = time;
+        p.x = x;
+        p.z = z;
+        p.lastMoveAt = time;
+
+        // Check pellets along accepted sprint movement.
+        collectPickups(room, p, time, oldX, oldZ);
+    }
+
+    socket.emit('moveAck', {
+        seq,
+        x: p.x,
+        z: p.z,
+        accepted
+    });
 }
 
 function fire(room, p) {
@@ -460,8 +478,8 @@ function fire(room, p) {
         io.to(p.id).emit(
             'notice',
             p.reserve > 0
-                ? 'EMPTY MAGAZINE · PRESS R TO RELOAD'
-                : 'OUT OF AMMO · COLLECT YELLOW PELLETS'
+                ? 'ELIPSEN MANA MOU · TSILLA R'
+                : 'EEE ELIPSAN OULES · SOROPSE JITRINOUKIA'
         );
         return;
     }
@@ -529,7 +547,9 @@ function fire(room, p) {
                 p.score += 100;
                 room.score += 100;
 
-                room.enemies = room.enemies.filter(e => e.hp > 0);
+                room.enemies = room.enemies.filter(
+                    e => e.hp > 0
+                );
 
                 if (p.kills % 4 === 0) {
                     room.pickups.push({
@@ -573,8 +593,10 @@ function fire(room, p) {
         x: origin[0],
         z: origin[2],
         hit: !!target,
-        tx: origin[0] + direction[0] * Math.min(distance, 55),
-        tz: origin[2] + direction[2] * Math.min(distance, 55),
+        tx: origin[0] +
+            direction[0] * Math.min(distance, 55),
+        tz: origin[2] +
+            direction[2] * Math.min(distance, 55),
         projectile:
             eggActive && ['banana', 'poop'].includes(p.egg)
                 ? p.egg
@@ -582,15 +604,45 @@ function fire(room, p) {
     });
 }
 
-function collectPickups(room, p, time) {
+function collectPickups(
+    room,
+    p,
+    time,
+    oldX = p.x,
+    oldZ = p.z
+) {
     if (p.dead) return;
+
+    // Collect pellets crossed between movement updates,
+    // rather than checking only the final position.
+    const dx = p.x - oldX;
+    const dz = p.z - oldZ;
+    const len2 = dx * dx + dz * dz;
 
     for (let i = room.pickups.length - 1; i >= 0; i--) {
         const item = room.pickups[i];
 
+        const t = len2 > 0
+            ? clamp(
+                (
+                    (item.x - oldX) * dx +
+                    (item.z - oldZ) * dz
+                ) / len2,
+                0,
+                1
+            )
+            : 0;
+
+        const nx = oldX + t * dx;
+        const nz = oldZ + t * dz;
+
         if (
-            distanceSquared(p.x, p.z, item.x, item.z) >=
-            0.65 * 0.65
+            distanceSquared(
+                nx,
+                nz,
+                item.x,
+                item.z
+            ) >= 0.65 * 0.65
         ) continue;
 
         room.pickups.splice(i, 1);
@@ -599,9 +651,11 @@ function collectPickups(room, p, time) {
             p.reserve++;
             p.score += 10;
             room.score += 10;
+
         } else if (item.type === 'power') {
             p.powerUntil = time + 12000;
             p.score += 100;
+
         } else if (item.type === 'egg') {
             p.egg = item.kind;
             p.eggUntil = time + EGG_DURATION_MS;
@@ -610,6 +664,7 @@ function collectPickups(room, p, time) {
                 'notice',
                 `EASTER EGG: ${item.kind.toUpperCase()} · 15 SECONDS`
             );
+
         } else if (item.type === 'health') {
             p.hp = Math.min(100, p.hp + 30);
         }
@@ -626,8 +681,8 @@ function updateGhosts(room, time, dt) {
         return;
     }
 
-    // Share maze pathfinding among ghosts chasing the
-    // same player tile on this server tick.
+    // Share maze pathfinding among ghosts chasing
+    // the same player tile during this tick.
     const pathCache = new Map();
 
     for (const e of room.enemies) {
@@ -635,7 +690,12 @@ function updateGhosts(room, time, dt) {
         let closest = Infinity;
 
         for (const p of living) {
-            const d = distanceSquared(p.x, p.z, e.x, e.z);
+            const d = distanceSquared(
+                p.x,
+                p.z,
+                e.x,
+                e.z
+            );
 
             if (d < closest) {
                 closest = d;
@@ -668,11 +728,15 @@ function updateGhosts(room, time, dt) {
             [0, 1],
             [0, -1]
         ]) {
-            const value = field[ez + dz]?.[ex + dx] ?? 999;
+            const value =
+                field[ez + dz]?.[ex + dx] ?? 999;
 
             if (value < best) {
                 best = value;
-                next = [center(ex + dx), center(ez + dz)];
+                next = [
+                    center(ex + dx),
+                    center(ez + dz)
+                ];
             }
         }
 
@@ -683,22 +747,59 @@ function updateGhosts(room, time, dt) {
 
         if (distance > 0.05) {
             const speed = 1.1 + room.wave * 0.14;
-            const dx = (next[0] - e.x) / distance * speed * dt;
-            const dz = (next[1] - e.z) / distance * speed * dt;
 
-            if (passable(e.x + dx, e.z, 0.34)) e.x += dx;
-            if (passable(e.x, e.z + dz, 0.34)) e.z += dz;
+            const dx =
+                (next[0] - e.x) /
+                distance * speed * dt;
+
+            const dz =
+                (next[1] - e.z) /
+                distance * speed * dt;
+
+            if (passable(e.x + dx, e.z, 0.34)) {
+                e.x += dx;
+            }
+
+            if (passable(e.x, e.z + dz, 0.34)) {
+                e.z += dz;
+            }
         }
 
+        const playerDistance = Math.hypot(
+            target.x - e.x,
+            target.z - e.z
+        );
+
+        const direction = [
+            (target.x - e.x) /
+                Math.max(0.001, playerDistance),
+            0,
+            (target.z - e.z) /
+                Math.max(0.001, playerDistance)
+        ];
+
+        // Ghosts damage players only at close range,
+        // with an unobstructed path between them.
         if (
-            distanceSquared(e.x, e.z, target.x, target.z) <
-                0.85 * 0.85 &&
-            target.invulnUntil < time
+            playerDistance < 0.70 &&
+            !target.dead &&
+            target.invulnUntil < time &&
+            wallRay(
+                [e.x, 1.12, e.z],
+                direction,
+                playerDistance
+            ) >= playerDistance
         ) {
-            target.hp = Math.max(0, target.hp - 12);
+            target.hp = Math.max(
+                0,
+                target.hp - 12
+            );
+
             target.invulnUntil = time + 750;
 
-            if (target.hp === 0) target.dead = true;
+            if (target.hp === 0) {
+                target.dead = true;
+            }
         }
     }
 }
@@ -710,7 +811,10 @@ io.on('connection', socket => {
             return;
         }
 
-        const mode = data?.mode === 'pvp' ? 'pvp' : 'coop';
+        const mode = data?.mode === 'pvp'
+            ? 'pvp'
+            : 'coop';
+
         const room = makeRoom(mode, socket.id);
 
         join(socket, room, data?.name);
@@ -740,7 +844,9 @@ io.on('connection', socket => {
         }
 
         if (room.players.size >= MAX_PLAYERS) {
-            callback?.({ error: 'Room full (4 players)' });
+            callback?.({
+                error: 'Room full (4 players)'
+            });
             return;
         }
 
@@ -778,16 +884,22 @@ io.on('connection', socket => {
         const room = rooms.get(socket.data.code);
         const p = room?.players.get(socket.id);
 
-        if (!p || room.phase !== 'playing' || p.dead) return;
+        if (
+            !p ||
+            room.phase !== 'playing' ||
+            p.dead
+        ) return;
 
-        receiveMovement(p, input);
+        receiveMovement(room, p, input, socket);
     });
 
     socket.on('shoot', () => {
         const room = rooms.get(socket.data.code);
         const p = room?.players.get(socket.id);
 
-        if (p) fire(room, p);
+        if (p) {
+            fire(room, p);
+        }
     });
 
     socket.on('reload', () => {
@@ -806,7 +918,7 @@ io.on('connection', socket => {
         if (p.reserve <= 0) {
             io.to(socket.id).emit(
                 'notice',
-                'NO RESERVE AMMO · COLLECT YELLOW PELLETS'
+                'ELIPSAN OULLES MANA MOU · SOROPSE JITRINOUKIA'
             );
             return;
         }
@@ -832,7 +944,12 @@ let lastTick = now();
 
 setInterval(() => {
     const time = now();
-    const dt = clamp((time - lastTick) / 1000, 0, 0.1);
+
+    const dt = clamp(
+        (time - lastTick) / 1000,
+        0,
+        0.1
+    );
 
     lastTick = time;
 
@@ -844,8 +961,12 @@ setInterval(() => {
                     p.eggUntil = 0;
                 }
 
-                // Reloading only finishes after R was pressed.
-                if (p.reloadUntil && p.reloadUntil <= time) {
+                // Reloading only finishes
+                // after R was pressed.
+                if (
+                    p.reloadUntil &&
+                    p.reloadUntil <= time
+                ) {
                     const bullets = Math.min(
                         MAX_AMMO - p.ammo,
                         p.reserve
@@ -872,11 +993,14 @@ setInterval(() => {
             }
         }
 
-        // Keep the original snapshot format for game.js.
+        // Keep the snapshot format
+        // expected by game.js.
         broadcast(room);
     }
 }, TICK_MS);
 
 server.listen(PORT, '0.0.0.0', () => {
-    console.log('CHOMP multiplayer listening on ' + PORT);
+    console.log(
+        'CHOMP multiplayer listening on ' + PORT
+    );
 });
