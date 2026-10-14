@@ -1,4 +1,3 @@
-
 'use strict';
 
 // CHOMP multiplayer client.
@@ -127,12 +126,9 @@ function boot() {
         dead: false
     };
 
-    // --------------------------------------------------
     // MULTIPLAYER LOBBY
-    // --------------------------------------------------
 
     const input = document.createElement('div');
-
     input.id = 'multiplayer-lobby';
 
     input.innerHTML = `
@@ -197,11 +193,9 @@ function boot() {
         noticeUntil = performance.now() + seconds * 1000;
     }
 
-    // --------------------------------------------------
-    // SOCKET EVENTS
-    // --------------------------------------------------
+    // CONNECTION AND SESSION RESTORATION
 
-        let savedSession = null;
+    let savedSession = null;
 
     try {
         savedSession = JSON.parse(
@@ -210,8 +204,11 @@ function boot() {
     } catch {}
 
     let reconnecting = false;
+    let waitingForPlayer = false;
 
-    function rememberSession(data) {
+    function storeSession(data) {
+        if (!data?.code || !data?.token) return;
+
         savedSession = {
             code: data.code,
             token: data.token
@@ -225,57 +222,106 @@ function boot() {
         } catch {}
     }
 
+    function clearSession() {
+        savedSession = null;
+
+        try {
+            sessionStorage.removeItem('chompSession');
+        } catch {}
+    }
+
     function resetMovement(x, z) {
         pendingMoves = [];
         lastAckSeq = 0;
         nextMoveSeq = 0;
         lastSentX = x;
         lastSentZ = z;
-        moveBaseReady = false;
+        sendAt = 0;
+        moveBaseReady = true;
+    }
+
+    function connectionFailure(reason) {
+        console.error('CHOMP match restore failed:', reason);
+
+        reconnecting = true;
+        waitingForPlayer = false;
+        paused = true;
+        keys = {};
+
+        clearSession();
+
+        notify(
+            'MATCH LOST - REFRESH TO CREATE A NEW ROOM',
+            3600
+        );
+
+        status(
+            reason ||
+            'Previous room unavailable. Refresh to start again.'
+        );
+
+        // Do not silently switch away from an active
+        // first-person camera and imply that everything works.
+        if (!started) {
+            input.hidden = false;
+            $('#landing').hidden = false;
+            $('#hud').hidden = true;
+
+            document.body.classList.remove('playing');
+
+            reconnecting = false;
+            paused = false;
+        }
+    }
+
+    function restoreSession() {
+        if (!savedSession?.code || !savedSession?.token) {
+            reconnecting = false;
+            waitingForPlayer = false;
+
+            status(
+                'Connected. Create a room or enter an invite code.'
+            );
+
+            return;
+        }
+
+        reconnecting = true;
+        waitingForPlayer = true;
+        paused = true;
+        keys = {};
+
+        notify('RESTORING YOUR MATCH...', 10);
+
+        socket.timeout(8000).emit(
+            'resumeRoom',
+            savedSession,
+            (error, reply) => {
+                if (!socket.connected) return;
+
+                if (reply?.ok) {
+                    // Wait for the authoritative snapshot.
+                    return;
+                }
+
+                connectionFailure(
+                    error
+                        ? 'Server did not answer the resume request.'
+                        : (
+                            reply?.error ||
+                            'Previous match unavailable.'
+                        )
+                );
+            }
+        );
     }
 
     socket.on('connect', () => {
-        if (savedSession?.code && savedSession?.token) {
-            reconnecting = true;
-            paused = true;
-
-            socket.emit(
-                'resumeRoom',
-                savedSession,
-                reply => {
-                    if (reply?.ok) return;
-
-                    // Session expired or server restarted.
-                    reconnecting = false;
-                    joined = false;
-                    started = false;
-                    paused = false;
-                    myId = null;
-                    room = null;
-                    savedSession = null;
-
-                    try {
-                        sessionStorage.removeItem(
-                            'chompSession'
-                        );
-                    } catch {}
-
-                    $('#hud').hidden = true;
-                    $('#landing').hidden = false;
-
-                    document.body.classList.remove(
-                        'playing'
-                    );
-
-                    input.hidden = false;
-
-                    status(
-                        reply?.error ||
-                        'Previous room unavailable. Create a new room.'
-                    );
-                }
-            );
+        if (savedSession?.token) {
+            restoreSession();
         } else {
+            reconnecting = false;
+
             status(
                 'Connected. Create a room or enter an invite code.'
             );
@@ -283,18 +329,19 @@ function boot() {
     });
 
     socket.on('disconnect', reason => {
-        console.warn('CHOMP disconnected:', reason);
+        console.warn('CHOMP connection lost:', reason);
 
-        // Freeze gameplay while preserving the camera.
         reconnecting = true;
+        waitingForPlayer = true;
         paused = true;
         keys = {};
+
         pendingMoves = [];
         moveBaseReady = false;
 
         notify(
-            'CONNECTION LOST · RECONNECTING...',
-            5
+            'CONNECTION LOST - RECONNECTING...',
+            20
         );
 
         if (document.pointerLockElement) {
@@ -306,11 +353,13 @@ function boot() {
         joined = true;
         myId = data.id;
 
-        rememberSession(data);
+        reconnecting = false;
+        waitingForPlayer = false;
+
+        storeSession(data);
 
         status(
-            'ROOM ' + data.code +
-            ' · Share this invite code'
+            'ROOM ' + data.code + ' - Share this invite code'
         );
 
         $mp('#mp-code').value = data.code;
@@ -322,39 +371,22 @@ function boot() {
         joined = true;
         myId = data.id;
 
-        rememberSession(data);
+        storeSession(data);
 
-        reconnecting = false;
+        // Wait for the new player ID to appear
+        // in the next server snapshot.
+        waitingForPlayer = true;
+        reconnecting = true;
+        paused = true;
         keys = {};
 
-        resetMovement(me.x, me.z);
+        pendingMoves = [];
+        moveBaseReady = false;
 
-        paused = false;
-        $('#pause').hidden = true;
-$('#landing').hidden = true;
-$('#hud').hidden = false;
-
-document.body.classList.add('playing');
-
-notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
-
-        if (started) {
-            $('#landing').hidden = true;
-            $('#hud').hidden = false;
-            input.hidden = true;
-
-            notify(
-                'RECONNECTED · CLICK GAME TO AIM',
-                4
-            );
-        } else {
-            status(
-                'ROOM ' + data.code +
-                ' · Connection restored'
-            );
-        }
+        status(
+            'Connected. Waiting for your player to load...'
+        );
     });
-
 
     socket.on('snapshot', snapshot => {
         room = snapshot;
@@ -363,40 +395,105 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
             player => player.id === myId
         );
 
-        // Server owns HP, ammo and pickups. The camera is predicted locally;
-        // only acknowledged movement can adjust that prediction.
+        if (reconnecting && !p) {
+            return;
+        }
+
+        if (waitingForPlayer && p) {
+            me.x = p.x;
+            me.z = p.z;
+            me.yaw = p.yaw;
+            me.pitch = p.pitch;
+
+            resetMovement(p.x, p.z);
+
+            waitingForPlayer = false;
+            reconnecting = false;
+            paused = false;
+            keys = {};
+
+            $('#pause').hidden = true;
+
+            if (snapshot.phase === 'playing') {
+                started = true;
+
+                $('#landing').hidden = true;
+                $('#hud').hidden = false;
+                $('#end').hidden = true;
+
+                input.hidden = true;
+
+                document.body.classList.add('playing');
+
+                notify(
+                    'MATCH RESTORED - CLICK TO AIM',
+                    4
+                );
+            } else if (snapshot.phase === 'lobby') {
+                started = false;
+
+                input.hidden = false;
+                $('#landing').hidden = false;
+                $('#hud').hidden = true;
+
+                document.body.classList.remove('playing');
+            }
+        }
+
+        // Server owns HP, ammo, score and pickups.
         if (p) {
-            if (!moveBaseReady || snapshot.phase !== 'playing') {
+            if (
+                !moveBaseReady ||
+                snapshot.phase !== 'playing'
+            ) {
                 me.x = p.x;
                 me.z = p.z;
+
                 lastSentX = p.x;
                 lastSentZ = p.z;
+
                 pendingMoves = [];
                 moveBaseReady = true;
             }
-            const { x, z, yaw, pitch, ...serverFields } = p;
+
+            const {
+                x,
+                z,
+                yaw,
+                pitch,
+                ...serverFields
+            } = p;
+
             Object.assign(me, serverFields);
         }
 
         if (snapshot.phase === 'lobby') {
             $mp('#mp-players').textContent =
                 `${snapshot.players.length}/4 players: ` +
-                snapshot.players.map(player => player.name).join(', ');
+                snapshot.players
+                    .map(player => player.name)
+                    .join(', ');
 
-            $mp('#mp-start').hidden = snapshot.host !== myId;
+            $mp('#mp-start').hidden =
+                snapshot.host !== myId;
+
             input.hidden = false;
 
         } else if (snapshot.phase === 'playing') {
             if (!started) {
                 started = true;
                 paused = false;
+
                 terminalShown = false;
                 eliminatedNoticeShown = false;
+
                 if (p) {
                     me.x = p.x;
                     me.z = p.z;
+
                     lastSentX = p.x;
                     lastSentZ = p.z;
+
                     pendingMoves = [];
                     moveBaseReady = true;
                 }
@@ -407,12 +504,14 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                 $('#end').hidden = true;
 
                 document.body.classList.add('playing');
+
                 requestCapture();
             }
 
             if (p?.dead && !eliminatedNoticeShown) {
                 eliminatedNoticeShown = true;
                 keys = {};
+
                 notify(
                     'YOU ARE ELIMINATED · SPECTATING',
                     3
@@ -446,7 +545,8 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                         ? 'The ghosts won.'
                         : `${
                             snapshot.players.find(
-                                player => player.id === snapshot.winner
+                                player =>
+                                    player.id === snapshot.winner
                             )?.name || 'A PLAYER'
                         } WON`;
 
@@ -461,36 +561,59 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         updateHud();
     });
 
-    // Each reply identifies precisely which movement update was processed.
-    // Replaying unacknowledged movement prevents corrections from using old
-    // positions, and makes server rejections visible rather than silent.
+    // MOVEMENT ACKNOWLEDGEMENTS
+
     socket.on('moveAck', ack => {
-        if (!ack || !moveBaseReady || !started) return;
+        if (
+            !ack ||
+            !moveBaseReady ||
+            !started ||
+            reconnecting
+        ) return;
+
         const seq = Number(ack.seq);
+
         if (!Number.isSafeInteger(seq)) return;
-        if (!Number.isFinite(ack.x) || !Number.isFinite(ack.z)) return;
-        if (seq <= (lastAckSeq || 0)) return;
+        if (!Number.isFinite(ack.x)) return;
+        if (!Number.isFinite(ack.z)) return;
+        if (seq <= lastAckSeq) return;
+
         lastAckSeq = seq;
 
-        pendingMoves = pendingMoves.filter(m => m.seq > seq);
+        pendingMoves = pendingMoves.filter(
+            movement => movement.seq > seq
+        );
 
         let x = ack.x;
         let z = ack.z;
-        for (const m of pendingMoves) {
-            // Predict only movement that stays outside walls.
-            if (passable(x + m.dx, z, 0.25)) x += m.dx;
-            if (passable(x, z + m.dz, 0.25)) z += m.dz;
+
+        for (const movement of pendingMoves) {
+            if (passable(x + movement.dx, z, 0.25)) {
+                x += movement.dx;
+            }
+
+            if (passable(x, z + movement.dz, 0.25)) {
+                z += movement.dz;
+            }
         }
 
         const error = Math.hypot(me.x - x, me.z - z);
+
         if (!ack.accepted || error > 0.65) {
             me.x = x;
             me.z = z;
         }
-        // Keep outbound deltas relative to the latest prediction.
+
         if (!ack.accepted) {
             moveRejects++;
-            if (moveRejects === 5) notify('MOVEMENT RESYNCED WITH SERVER', 2);
+
+            if (moveRejects === 5) {
+                notify(
+                    'MOVEMENT RESYNCED WITH SERVER',
+                    2
+                );
+            }
+
             lastSentX = me.x;
             lastSentZ = me.z;
             pendingMoves = [];
@@ -534,7 +657,9 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                 name: $mp('#mp-name').value
             },
             response => {
-                if (response?.error) status(response.error);
+                if (response?.error) {
+                    status(response.error);
+                }
             }
         );
     };
@@ -547,16 +672,18 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                 name: $mp('#mp-name').value
             },
             response => {
-                if (response?.error) status(response.error);
+                if (response?.error) {
+                    status(response.error);
+                }
             }
         );
     };
 
-    $mp('#mp-start').onclick = () => send('startGame');
+    $mp('#mp-start').onclick = () => {
+        send('startGame');
+    };
 
-    // --------------------------------------------------
     // WORLD GEOMETRY
-    // --------------------------------------------------
 
     const geo = new Geometry();
     const neon = new Geometry();
@@ -615,9 +742,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         );
     }
 
-    // --------------------------------------------------
     // MESHES
-    // --------------------------------------------------
 
     const meshes = {
         walls: renderer.mesh(geo),
@@ -733,9 +858,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
 
     meshes.gun = renderer.mesh(gun);
 
-    // --------------------------------------------------
     // GHOST FACES
-    // --------------------------------------------------
 
     function face(x, y, z, yaw, scale = 1) {
         const sn = Math.sin(yaw);
@@ -774,9 +897,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         }
     }
 
-    // --------------------------------------------------
     // CHARACTER MODELS
-    // --------------------------------------------------
 
     const costumes = [
         {
@@ -806,13 +927,19 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
     ];
 
     function drawPlayer(p) {
-        const skin = costumes[p.character % 4] || costumes[0];
+        const skin =
+            costumes[p.character % 4] || costumes[0];
 
         const x = p.x;
         const z = p.z;
         const yaw = p.yaw;
 
-        const drawPart = (pos, size, tint, glow = 0) => {
+        const drawPart = (
+            pos,
+            size,
+            tint,
+            glow = 0
+        ) => {
             renderer.draw(
                 meshes.cube,
                 pos,
@@ -914,7 +1041,8 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                     meshes.sphere,
                     [
                         x + Math.sin(a) * 0.25,
-                        1.98 + Math.sin(clock * 4 + i) * 0.11,
+                        1.98 +
+                            Math.sin(clock * 4 + i) * 0.11,
                         z + Math.cos(a) * 0.25
                     ],
                     [0.13, 0.24, 0.13],
@@ -926,9 +1054,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         }
     }
 
-    // --------------------------------------------------
     // HUD
-    // --------------------------------------------------
 
     function updateHud() {
         if (!room) return;
@@ -974,18 +1100,19 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                 'OVERDRIVE ';
         }
 
-        $('#combo').textContent = room.mode.toUpperCase();
+        $('#combo').textContent =
+            room.mode.toUpperCase();
     }
 
-    // --------------------------------------------------
     // CAMERA AND MOVEMENT
-    // --------------------------------------------------
 
     function requestCapture() {
         if (!$('#world').requestPointerLock) return;
 
         try {
-            const promise = $('#world').requestPointerLock();
+            const promise =
+                $('#world').requestPointerLock();
+
             promise?.catch?.(() => {});
         } catch {}
     }
@@ -1007,11 +1134,18 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
             (keys.KeyD || keys.KeyE ? 1 : 0) -
             (keys.KeyA || keys.KeyQ ? 1 : 0);
 
-        const length = Math.hypot(forward, sideways);
+        const length = Math.hypot(
+            forward,
+            sideways
+        );
 
         if (length) {
             const speed =
-                (keys.ShiftLeft || keys.ShiftRight ? 7 : 4.7) *
+                (
+                    keys.ShiftLeft || keys.ShiftRight
+                        ? 7
+                        : 4.7
+                ) *
                 (me.egg === 'frenzy' ? 1.65 : 1);
 
             const dx =
@@ -1037,21 +1171,26 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
             walking += dt * 10;
         }
 
-        // Send movement at about 20 Hz. Record every pending displacement
-        // so that acknowledged server positions can be reconciled correctly.
         sendAt -= dt;
+
         if (sendAt <= 0 && socket.connected) {
             sendAt = 0.05;
+
             const seq = ++nextMoveSeq;
+
             pendingMoves.push({
                 seq,
                 dx: me.x - lastSentX,
                 dz: me.z - lastSentZ
             });
-            // Guard against unbounded memory growth after a lost connection.
-            if (pendingMoves.length > 120) pendingMoves.shift();
+
+            if (pendingMoves.length > 120) {
+                pendingMoves.shift();
+            }
+
             lastSentX = me.x;
             lastSentZ = me.z;
+
             socket.emit('move', {
                 seq,
                 x: me.x,
@@ -1062,9 +1201,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         }
     }
 
-    // --------------------------------------------------
     // RENDER THE GAME
-    // --------------------------------------------------
 
     function draw() {
         renderer.clear();
@@ -1084,11 +1221,12 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
 
             renderer.camera(
                 eye,
-                eye.map((value, i) => value + forward[i]),
+                eye.map(
+                    (value, i) => value + forward[i]
+                ),
                 1.12,
                 0.0012
             );
-
         } else {
             renderer.camera(
                 [31.5, 4.5, 34.8],
@@ -1110,9 +1248,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         );
 
         if (room) {
-            // ------------------------------------------
             // PELLETS AND POWER-UPS
-            // ------------------------------------------
 
             for (const item of room.pickups) {
                 if (
@@ -1127,10 +1263,12 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                     Math.sin(clock * 2 + item.id) * 0.08;
 
                 renderer.draw(
-                    item.type === 'health' || item.type === 'egg'
+                    (
+                        item.type === 'health' ||
+                        item.type === 'egg'
+                    )
                         ? meshes.cube
                         : meshes.sphere,
-
                     [
                         item.x,
                         item.type === 'power'
@@ -1138,7 +1276,6 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                             : 0.38 + bob,
                         item.z
                     ],
-
                     item.type === 'power'
                         ? [0.30, 0.30, 0.30]
                         : item.type === 'egg'
@@ -1146,10 +1283,8 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                             : item.type === 'health'
                                 ? [0.24, 0.24, 0.24]
                                 : [0.085, 0.085, 0.085],
-
                     clock * 0.3,
                     1,
-
                     item.type === 'health'
                         ? C.cyan
                         : item.type === 'egg'
@@ -1158,9 +1293,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                 );
             }
 
-            // ------------------------------------------
-            // GHOSTS AND THEIR FACES
-            // ------------------------------------------
+            // GHOSTS
 
             for (const e of room.enemies) {
                 if (
@@ -1192,9 +1325,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                 face(e.x, gy, e.z, yaw);
             }
 
-            // ------------------------------------------
             // OTHER PLAYERS
-            // ------------------------------------------
 
             for (const p of room.players) {
                 if (p.id === myId || p.dead) continue;
@@ -1211,9 +1342,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
             }
         }
 
-        // ----------------------------------------------
         // PROJECTILES
-        // ----------------------------------------------
 
         for (const projectile of projectiles) {
             const color =
@@ -1231,7 +1360,8 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                         : 2;
 
             for (let i = 0; i < pieces; i++) {
-                const t = (i + 1) / (pieces + 1);
+                const t =
+                    (i + 1) / (pieces + 1);
 
                 renderer.draw(
                     projectile.projectile === 'banana'
@@ -1239,24 +1369,24 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                         : projectile.projectile === 'poop'
                             ? meshes.poop
                             : meshes.sphere,
-
                     [
                         projectile.x +
-                            (projectile.tx - projectile.x) * t,
-
+                            (
+                                projectile.tx -
+                                projectile.x
+                            ) * t,
                         1.12,
-
                         projectile.z +
-                            (projectile.tz - projectile.z) * t
+                            (
+                                projectile.tz -
+                                projectile.z
+                            ) * t
                     ],
-
                     projectile.projectile === 'bullet'
                         ? [0.08, 0.08, 0.08]
                         : [0.50, 0.50, 0.50],
-
                     clock * 3,
                     1,
-
                     projectile.projectile === 'bullet'
                         ? color
                         : [1, 1, 1]
@@ -1264,9 +1394,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
             }
         }
 
-        // ----------------------------------------------
         // FIRST-PERSON GUN
-        // ----------------------------------------------
 
         if (started && !me.dead) {
             renderer.clearDepth();
@@ -1278,7 +1406,8 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                 0
             );
 
-            const bob = Math.sin(walking) * 0.01;
+            const bob =
+                Math.sin(walking) * 0.01;
 
             renderer.draw(
                 meshes.gun,
@@ -1301,20 +1430,20 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         }
     }
 
-    // --------------------------------------------------
     // MINIMAP
-    // --------------------------------------------------
 
     function mini() {
-        const ctx = $('#map').getContext('2d');
+        const ctx =
+            $('#map').getContext('2d');
 
         ctx.clearRect(0, 0, 170, 170);
 
         for (let z = 0; z < 17; z++) {
             for (let x = 0; x < 17; x++) {
-                ctx.fillStyle = wall(x, z)
-                    ? '#244455'
-                    : '#091923';
+                ctx.fillStyle =
+                    wall(x, z)
+                        ? '#244455'
+                        : '#091923';
 
                 ctx.fillRect(
                     x * 10 + 1,
@@ -1353,9 +1482,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         }
     }
 
-    // --------------------------------------------------
     // GAME LOOP
-    // --------------------------------------------------
 
     function frame(time) {
         const dt = Math.min(
@@ -1372,13 +1499,13 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         );
 
         projectiles = projectiles.filter(
-            projectile => (projectile.life -= dt) > 0
+            projectile =>
+                (projectile.life -= dt) > 0
         );
 
         move(dt);
         draw();
 
-        // Refresh minimap 8 times a second.
         if (time >= nextMinimapAt) {
             mini();
             nextMinimapAt = time + 125;
@@ -1394,9 +1521,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
 
     requestAnimationFrame(frame);
 
-    // --------------------------------------------------
     // KEYBOARD CONTROLS
-    // --------------------------------------------------
 
     document.addEventListener('keydown', e => {
         if (
@@ -1424,10 +1549,13 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         }
 
         // R is the ONLY way to start reloading.
+
         if (
             e.code === 'KeyR' &&
             !e.repeat &&
-            started
+            started &&
+            !reconnecting &&
+            socket.connected
         ) {
             if (me.reserve <= 0) {
                 notify(
@@ -1439,7 +1567,10 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
             }
         }
 
-        if (e.code === 'Escape' && started) {
+        if (
+            e.code === 'Escape' &&
+            started
+        ) {
             paused = true;
             $('#pause').hidden = false;
         }
@@ -1449,18 +1580,19 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         keys[e.code] = false;
     });
 
-    // --------------------------------------------------
     // MOUSE CONTROLS
-    // --------------------------------------------------
 
     document.addEventListener('mousemove', e => {
         if (
             started &&
             !paused &&
+            !reconnecting &&
             document.pointerLockElement === $('#world')
         ) {
             me.yaw +=
-                e.movementX * 0.0022 * mouseSensitivity;
+                e.movementX *
+                0.0022 *
+                mouseSensitivity;
 
             me.pitch = Math.max(
                 -0.9,
@@ -1475,48 +1607,58 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
         }
     });
 
-    $('#world').addEventListener('mousedown', e => {
-        if (
-            e.button !== 0 ||
-            !socket.connected ||
-            reconnecting ||
-            !started ||
-            paused ||
-            me.dead
-        ) {
-            return;
-        }
-
-        if (document.pointerLockElement !== $('#world')) {
-            requestCapture();
-            return;
-        }
-
-        if (me.ammo <= 0) {
-            const time = performance.now();
-
-            if (time - lastEmptyWarn > 1400) {
-                notify(
-                    me.reserve > 0
-                        ? 'ELIPSEN MANA MOU · TSILLA R'
-                        : 'EEE ELIPSAN OULES · SOROPSE JITRINOUKIA',
-                    2.5
-                );
-
-                lastEmptyWarn = time;
+    $('#world').addEventListener(
+        'mousedown',
+        e => {
+            if (
+                e.button !== 0 ||
+                !socket.connected ||
+                reconnecting ||
+                !started ||
+                paused ||
+                me.dead
+            ) {
+                return;
             }
-        } else {
-            socket.emit('shoot');
+
+            if (
+                document.pointerLockElement !==
+                $('#world')
+            ) {
+                requestCapture();
+                return;
+            }
+
+            if (me.ammo <= 0) {
+                const time =
+                    performance.now();
+
+                if (
+                    time - lastEmptyWarn > 1400
+                ) {
+                    notify(
+                        me.reserve > 0
+                            ? 'ELIPSEN MANA MOU · TSILLA R'
+                            : 'EEE ELIPSAN OULES · SOROPSE JITRINOUKIA',
+                        2.5
+                    );
+
+                    lastEmptyWarn = time;
+                }
+            } else {
+                socket.emit('shoot');
+            }
         }
-    });
+    );
 
-    $('#world').addEventListener('contextmenu', e => {
-        e.preventDefault();
-    });
+    $('#world').addEventListener(
+        'contextmenu',
+        e => {
+            e.preventDefault();
+        }
+    );
 
-    // --------------------------------------------------
     // WINDOW AND MENU CONTROLS
-    // --------------------------------------------------
 
     window.addEventListener('resize', () => {
         renderer.resize();
@@ -1528,34 +1670,40 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
 
     $('#play').onclick = () => {
         if (!joined) {
-            status('Create or join a private room first.');
+            status(
+                'Create or join a private room first.'
+            );
         }
 
         input.hidden = false;
     };
 
     $('#resume').onclick = () => {
-        if (!socket.connected || reconnecting) return;
+        if (
+            !socket.connected ||
+            reconnecting
+        ) return;
+
         paused = false;
+
         $('#pause').hidden = true;
+
         requestCapture();
     };
 
     $('#restart-pause').onclick = () => {
-        notify('Create a new room to restart a match.');
+        notify(
+            'Create a new room to restart a match.'
+        );
     };
 
     $('#again').onclick = () => {
-        try {
-            sessionStorage.removeItem('chompSession');
-        } catch {}
+        clearSession();
         location.reload();
     };
 
     $('#back-home').onclick = () => {
-        try {
-            sessionStorage.removeItem('chompSession');
-        } catch {}
+        clearSession();
         location.reload();
     };
 
@@ -1577,6 +1725,7 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
 
         if (started) {
             paused = true;
+
             $('#pause').hidden = false;
 
             if (document.pointerLockElement) {
@@ -1588,11 +1737,13 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
     };
 
     $('#sensitivity').oninput = e => {
-        mouseSensitivity = Number(e.target.value);
+        mouseSensitivity =
+            Number(e.target.value);
     };
 
     $('#sound').onclick = () => {
-        $('#sound').textContent = 'SOUND OFF';
+        $('#sound').textContent =
+            'SOUND OFF';
     };
 
     $('#fullscreen').onclick = () => {
@@ -1603,15 +1754,15 @@ notify('RECONNECTED - CLICK THE GAME TO PLAY', 4);
                 .catch(() => {});
     };
 
-    // --------------------------------------------------
     // JOIN ROOM USING URL PARAMETER
-    // --------------------------------------------------
 
-    const urlRoom = new URLSearchParams(
-        location.search
-    ).get('room');
+    const urlRoom =
+        new URLSearchParams(
+            location.search
+        ).get('room');
 
     if (urlRoom) {
-        $mp('#mp-code').value = urlRoom.toUpperCase();
+        $mp('#mp-code').value =
+            urlRoom.toUpperCase();
     }
 }
