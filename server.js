@@ -226,7 +226,7 @@ function spawnBoss(room) {
         'O PPIKLIS O VASILIAS',
         'O PETINOS',
         'TO JERATO MOU TO KLOSTRON',
-        'DIMITRIS XXX',
+        'O DIMITRIS XXX',
         'I SOLINA TOU PASKATOU'
     ];
 
@@ -303,7 +303,7 @@ function spawnBoss(room) {
     room.nextWaveAt = 0;
 
     // Notify every player in the room, not just the host.
-    io.to(room.code).emit('notice', `TORA XA JE ERKETE ERKETE O: ${bossName}`);
+    io.to(room.code).emit('notice', `TORA XA JE ERKETE ERKETE: ${bossName}`);
 
     console.log(
         `Boss ${bossName} spawned in room ${room.code}, wave ${room.wave}`
