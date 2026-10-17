@@ -223,11 +223,11 @@ function addEggs(room) {
 
 function spawnBoss(room) {
     const bossNames = [
-        'THE WARDEN',
-        'THE REAPER',
-        'THE DEVOURER',
-        'THE NIGHTMARE',
-        'THE FINAL CHOMP'
+        'O PPIKLIS O VASILIAS',
+        'O PETINOS',
+        'TO JERATO MOU TO KLOSTRON',
+        'DIMITRIS XXX',
+        'I SOLINA TOU PASKATOU'
     ];
 
     // Find valid floor tiles using the server's existing map.
