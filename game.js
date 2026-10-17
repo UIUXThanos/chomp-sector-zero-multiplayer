@@ -1059,9 +1059,15 @@ function boot() {
         $('#wave').textContent =
             String(room.wave || 1).padStart(2, '0');
 
+        const boss = room.mode === 'coop'
+            ? room.enemies.find(enemy => enemy.isBoss)
+            : null;
+
         $('#enemy-count').textContent =
             room.mode === 'coop'
-                ? `${room.enemies.length} HOSTILES REMAIN`
+                ? boss
+                    ? `${boss.bossName} · ${boss.hp}/${boss.maxHp} HP`
+                    : `${room.enemies.length} HOSTILES REMAIN`
                 : `${
                     room.players.filter(p => !p.dead).length
                 } PLAYERS ALIVE`;
@@ -1310,16 +1316,62 @@ function boot() {
                     me.z - e.z
                 );
 
+                const bossScale = e.isBoss ? 2.25 : 1;
+                const drawY = gy + (e.isBoss ? 0.65 : 0);
+
                 renderer.draw(
                     meshes.ghost,
-                    [e.x, gy, e.z],
-                    [1, 1, 1],
+                    [e.x, drawY, e.z],
+                    [bossScale, bossScale, bossScale],
                     yaw,
-                    0.3,
+                    e.isBoss ? 1 : 0.3,
                     e.color
                 );
 
-                face(e.x, gy, e.z, yaw);
+                face(
+                    e.x,
+                    drawY,
+                    e.z,
+                    yaw,
+                    bossScale
+                );
+
+                if (e.isBoss && e.maxHp > 0) {
+                    const healthRatio = Math.max(
+                        0,
+                        Math.min(1, e.hp / e.maxHp)
+                    );
+
+                    const barWidth = 2.9 * healthRatio;
+
+                    // Dark background behind the boss health bar.
+                    renderer.draw(
+                        meshes.cube,
+                        [e.x, drawY + 1.7, e.z],
+                        [2.9, 0.12, 0.12],
+                        0,
+                        0.8,
+                        [0.08, 0.03, 0.08]
+                    );
+
+                    // Health bar shrinks as server-reported HP decreases.
+                    if (barWidth > 0) {
+                        renderer.draw(
+                            meshes.cube,
+                            [
+                                e.x - (2.9 - barWidth) / 2,
+                                drawY + 1.71,
+                                e.z - 0.01
+                            ],
+                            [barWidth, 0.14, 0.14],
+                            0,
+                            1,
+                            healthRatio < 0.3
+                                ? [1, 0.08, 0.08]
+                                : e.color
+                        );
+                    }
+                }
             }
 
             // OTHER PLAYERS
