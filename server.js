@@ -1,3 +1,4 @@
+
 'use strict';
 
 const express = require('express');
@@ -219,6 +220,7 @@ function addEggs(room) {
         });
     }
 }
+
 function spawnBoss(room) {
     const bossNames = [
         'THE WARDEN',
@@ -272,9 +274,7 @@ function spawnBoss(room) {
     }
 
     if (!spawnPosition) {
-        console.error(
-            `Could not find a boss spawn point in room ${room.code}`
-        );
+        console.error(`Could not find a boss spawn point in room ${room.code}`);
         room.phase = 'finished';
         room.winner = 'ghosts';
         return;
@@ -303,10 +303,7 @@ function spawnBoss(room) {
     room.nextWaveAt = 0;
 
     // Notify every player in the room, not just the host.
-    io.to(room.code).emit(
-        'notice',
-        `BOSS INCOMING: ${bossName}`
-    );
+    io.to(room.code).emit('notice', `BOSS INCOMING: ${bossName}`);
 
     console.log(
         `Boss ${bossName} spawned in room ${room.code}, wave ${room.wave}`
@@ -443,7 +440,6 @@ function join(socket, room, name) {
     socket.join(room.code);
     socket.data.code = room.code;
     socket.data.playerId = p.id;
-
     socket.emit('joined', {
         code: room.code,
         id: p.id,
@@ -469,7 +465,7 @@ function leave(socket) {
 
 function resume(socket, input, callback) {
     if (socket.data.code) {
-        return callback?.({ error: 'Already in a room' });
+        return callback?.({error: 'Already in a room'});
     }
 
     const room = rooms.get(
@@ -525,11 +521,10 @@ function resume(socket, input, callback) {
         token: p.token
     });
 
-    callback?.({ ok: true });
+    callback?.({ok: true});
 
     broadcast(room);
 }
-
 // Movement follows the same collision rules as the client.
 // A packet represents a short endpoint movement,
 // so test both legal axis orders.
@@ -713,7 +708,6 @@ function fire(room, p) {
 
                 if (target.isBoss) {
                     room.bossDefeated = true;
-
                     io.to(room.code).emit(
                         'notice',
                         `${target.bossName} DEFEATED!`
@@ -855,7 +849,6 @@ function updateGhosts(room, time, dt) {
         ) {
             return;
         }
-
         room.phase = 'finished';
         room.winner = 'ghosts';
         return;
@@ -992,7 +985,6 @@ io.on('connection', socket => {
     socket.on('resumeRoom', (data, callback) =>
         resume(socket, data, callback)
     );
-
     socket.on('createRoom', (data, callback) => {
         if (socket.data.code) {
             callback?.({ error: 'Already in a room' });
@@ -1200,17 +1192,18 @@ setInterval(() => {
                     room.phase === 'playing'
                 ) {
                     if (!room.bossSpawned) {
-                        // All regular enemies are defeated.
+                        // All regular enemies are defeated. Spawn the boss.
                         spawnBoss(room);
                     } else if (room.bossDefeated) {
-                        // Boss defeated: start the next wave.
+                        // The boss has been defeated. Start the next wave.
                         nextWave(room);
                     }
                 }
             }
         }
 
-        // Keep the snapshot format expected by game.js.
+        // Keep the snapshot format
+        // expected by game.js.
         if (time - lastSnapshotAt >= SNAPSHOT_MS) {
             broadcast(room);
         }
