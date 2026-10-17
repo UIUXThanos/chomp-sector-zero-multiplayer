@@ -1,4 +1,3 @@
-
 'use strict';
 
 const express = require('express');
@@ -160,6 +159,8 @@ function makeRoom(mode, host) {
         pickups: pickups(),
         nextEnemyId: 0,
         nextWaveAt: 0,
+        bossSpawned: false,
+        bossDefeated: false,
         score: 0,
         winner: null,
         eggSerial: 0
@@ -218,6 +219,99 @@ function addEggs(room) {
         });
     }
 }
+function spawnBoss(room) {
+    const bossNames = [
+        'THE WARDEN',
+        'THE REAPER',
+        'THE DEVOURER',
+        'THE NIGHTMARE',
+        'THE FINAL CHOMP'
+    ];
+
+    // Find valid floor tiles using the server's existing map.
+    const candidates = [];
+
+    for (let z = 1; z < MAP.length - 1; z++) {
+        for (let x = 1; x < MAP[z].length - 1; x++) {
+            if (MAP[z][x] === '#') continue;
+
+            const px = center(x);
+            const pz = center(z);
+
+            if (passable(px, pz, 0.4)) {
+                candidates.push([px, pz]);
+            }
+        }
+    }
+
+    const livingPlayers = [...room.players.values()].filter(
+        p => !p.dead && p.connected
+    );
+
+    let spawnPosition = candidates[0];
+    let greatestDistance = -1;
+
+    for (const candidate of candidates) {
+        const nearestPlayerDistance = livingPlayers.length
+            ? Math.min(
+                ...livingPlayers.map(p =>
+                    distanceSquared(
+                        p.x,
+                        p.z,
+                        candidate[0],
+                        candidate[1]
+                    )
+                )
+            )
+            : 0;
+
+        if (nearestPlayerDistance > greatestDistance) {
+            greatestDistance = nearestPlayerDistance;
+            spawnPosition = candidate;
+        }
+    }
+
+    if (!spawnPosition) {
+        console.error(
+            `Could not find a boss spawn point in room ${room.code}`
+        );
+        room.phase = 'finished';
+        room.winner = 'ghosts';
+        return;
+    }
+
+    const maxHp = 35 + room.wave * 20;
+    const bossName = bossNames[room.wave - 1] || 'THE CHAMPION';
+
+    room.enemies.push({
+        id: room.nextEnemyId++,
+        x: spawnPosition[0],
+        z: spawnPosition[1],
+        hp: maxHp,
+        maxHp,
+        isBoss: true,
+        bossName,
+        color: room.wave % 2
+            ? [0.08, 0.85, 1]
+            : [0.95, 0.12, 0.55],
+        phase: Math.random() * 6,
+        hit: 0
+    });
+
+    room.bossSpawned = true;
+    room.bossDefeated = false;
+    room.nextWaveAt = 0;
+
+    // Notify every player in the room, not just the host.
+    io.to(room.code).emit(
+        'notice',
+        `BOSS INCOMING: ${bossName}`
+    );
+
+    console.log(
+        `Boss ${bossName} spawned in room ${room.code}, wave ${room.wave}`
+    );
+}
 
 function nextWave(room) {
     room.wave++;
@@ -229,6 +323,8 @@ function nextWave(room) {
     }
 
     room.enemies = [];
+    room.bossSpawned = false;
+    room.bossDefeated = false;
 
     // Bring back all pellets at the beginning of each wave.
     room.pickups = pickups();
@@ -347,6 +443,7 @@ function join(socket, room, name) {
     socket.join(room.code);
     socket.data.code = room.code;
     socket.data.playerId = p.id;
+
     socket.emit('joined', {
         code: room.code,
         id: p.id,
@@ -372,7 +469,7 @@ function leave(socket) {
 
 function resume(socket, input, callback) {
     if (socket.data.code) {
-        return callback?.({error: 'Already in a room'});
+        return callback?.({ error: 'Already in a room' });
     }
 
     const room = rooms.get(
@@ -428,10 +525,11 @@ function resume(socket, input, callback) {
         token: p.token
     });
 
-    callback?.({ok: true});
+    callback?.({ ok: true });
 
     broadcast(room);
 }
+
 // Movement follows the same collision rules as the client.
 // A packet represents a short endpoint movement,
 // so test both legal axis orders.
@@ -588,7 +686,7 @@ function fire(room, p) {
             origin,
             direction,
             [entity.x, 1.12, entity.z],
-            0.6
+            entity.isBoss ? 1.25 : 0.6
         );
 
         if (hitDistance < distance) {
@@ -608,8 +706,19 @@ function fire(room, p) {
 
             if (target.hp <= 0) {
                 p.kills++;
-                p.score += 100;
-                room.score += 100;
+
+                const points = target.isBoss ? 1000 : 100;
+                p.score += points;
+                room.score += points;
+
+                if (target.isBoss) {
+                    room.bossDefeated = true;
+
+                    io.to(room.code).emit(
+                        'notice',
+                        `${target.bossName} DEFEATED!`
+                    );
+                }
 
                 room.enemies = room.enemies.filter(
                     e => e.hp > 0
@@ -746,6 +855,7 @@ function updateGhosts(room, time, dt) {
         ) {
             return;
         }
+
         room.phase = 'finished';
         room.winner = 'ghosts';
         return;
@@ -816,7 +926,9 @@ function updateGhosts(room, time, dt) {
         );
 
         if (distance > 0.05) {
-            const speed = 1.1 + room.wave * 0.14;
+            const speed = e.isBoss
+                ? 1.45 + room.wave * 0.12
+                : 1.1 + room.wave * 0.14;
 
             const dx =
                 (next[0] - e.x) /
@@ -851,7 +963,7 @@ function updateGhosts(room, time, dt) {
         // Ghosts damage players only at close range,
         // with an unobstructed path between them.
         if (
-            playerDistance < 0.70 &&
+            playerDistance < (e.isBoss ? 1.25 : 0.70) &&
             !target.dead &&
             target.invulnUntil < time &&
             wallRay(
@@ -862,10 +974,12 @@ function updateGhosts(room, time, dt) {
         ) {
             target.hp = Math.max(
                 0,
-                target.hp - 12
+                target.hp - (e.isBoss ? 22 : 12)
             );
 
-            target.invulnUntil = time + 750;
+            target.invulnUntil = time + (
+                e.isBoss ? 1000 : 750
+            );
 
             if (target.hp === 0) {
                 target.dead = true;
@@ -878,6 +992,7 @@ io.on('connection', socket => {
     socket.on('resumeRoom', (data, callback) =>
         resume(socket, data, callback)
     );
+
     socket.on('createRoom', (data, callback) => {
         if (socket.data.code) {
             callback?.({ error: 'Already in a room' });
@@ -1084,13 +1199,18 @@ setInterval(() => {
                     time >= room.nextWaveAt &&
                     room.phase === 'playing'
                 ) {
-                    nextWave(room);
+                    if (!room.bossSpawned) {
+                        // All regular enemies are defeated.
+                        spawnBoss(room);
+                    } else if (room.bossDefeated) {
+                        // Boss defeated: start the next wave.
+                        nextWave(room);
+                    }
                 }
             }
         }
 
-        // Keep the snapshot format
-        // expected by game.js.
+        // Keep the snapshot format expected by game.js.
         if (time - lastSnapshotAt >= SNAPSHOT_MS) {
             broadcast(room);
         }
