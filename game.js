@@ -337,7 +337,7 @@ function boot() {
         moveBaseReady = false;
 
         notify(
-            'CONNECTION LOST - RECONNECTING...',
+            'TORA NA KSANAENOTHI JE EMAGKOSEN...',
             20
         );
 
@@ -527,17 +527,17 @@ function boot() {
 
             $('#end-kicker').textContent =
                 snapshot.winner === 'coop'
-                    ? 'SECTOR SECURED'
-                    : 'MATCH FINISHED';
+                    ? 'PANAGIA MOU EFAS TOUS OULLOUS'
+                    : 'PASSA MOU ESI';
 
             $('#end-title').textContent =
                 snapshot.mode === 'coop'
-                    ? 'GAME OVER'
+                    ? 'KANI EGIRES JE EPIES'
                     : 'PVP OVER';
 
             $('#end-copy').textContent =
                 snapshot.winner === 'coop'
-                    ? 'All ghost waves cleared!'
+                    ? 'EPSOFISAN XOULA TA MAVROTOUMPANA'
                     : snapshot.winner === 'ghosts'
                         ? 'The ghosts won.'
                         : `${
@@ -606,7 +606,7 @@ function boot() {
 
             if (moveRejects === 5) {
                 notify(
-                    'MOVEMENT RESYNCED WITH SERVER',
+                    'TORA NA KSITTILARI',
                     2
                 );
             }
@@ -1088,7 +1088,7 @@ function boot() {
 
         $('#reload-label').textContent =
             me.reloading
-                ? 'RELOADING…'
+                ? 'GEMONOO POMINE…'
                 : me.reserve === 0
                     ? 'ELIPSAN SOU OULLA MANA MOU'
                     : 'TSILA JINTO R';
