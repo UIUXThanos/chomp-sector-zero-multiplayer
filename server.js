@@ -303,7 +303,7 @@ function spawnBoss(room) {
     room.nextWaveAt = 0;
 
     // Notify every player in the room, not just the host.
-    io.to(room.code).emit('notice', `BOSS INCOMING: ${bossName}`);
+    io.to(room.code).emit('notice', `TORA XA JE ERKETE ERKETE O: ${bossName}`);
 
     console.log(
         `Boss ${bossName} spawned in room ${room.code}, wave ${room.wave}`
@@ -710,7 +710,7 @@ function fire(room, p) {
                     room.bossDefeated = true;
                     io.to(room.code).emit(
                         'notice',
-                        `${target.bossName} DEFEATED!`
+                        `${target.bossName} EPSOISEN!`
                     );
                 }
 
